@@ -35,6 +35,8 @@ Variables mínimas de producción:
 
 Sin un volumen, los archivos escritos dentro del contenedor se pierden al redesplegar. Monta el volumen Railway en `/data`; la aplicación creará y usará `/data/uploads`. Utiliza una sola réplica mientras los uploads dependan de este volumen local.
 
+Las imágenes de catálogo conservan URLs públicas. Los documentos de identidad, documentos del personal y comprobantes de pago se entregan mediante URLs firmadas que vencen; no expongas el contenido del volumen con otro servidor estático.
+
 ## Desarrollo y verificación
 
 ```bash

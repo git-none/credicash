@@ -147,6 +147,7 @@ class AppService(
     private val gson = Gson()
     private val MAX_LOGIN_ATTEMPTS = 5
     private val uploadRoot = File(config.uploadDir).apply { mkdirs() }
+    private val uploadAccessPolicy = UploadAccessPolicy(config.jwtSecret)
     private val secureRandom = SecureRandom()
     private val notificationExecutor = Executors.newFixedThreadPool(2) { task ->
         Thread(task, "credicash-push").apply { isDaemon = true }
@@ -1799,6 +1800,13 @@ class AppService(
             "Recibimos tus documentos. Te avisaremos cuando finalice la revisión.",
             "REGISTRATION_UNDER_REVIEW"
         )
+    }
+
+    /** Valida la capacidad temporal antes de aceptar y escribir un multipart. */
+    fun validateRegistrationDocumentToken(userId: Long, registrationToken: String) {
+        database.transaction { connection ->
+            verifyChallenge(connection, registrationToken, userId, "REGISTRATION_DOCUMENT", consume = false)
+        }
     }
 
     fun me(userId: Long): UserDto = database.dataSource.connection.use { userDto(it, userId) }
@@ -9592,7 +9600,12 @@ class AppService(
 
     fun publicUrl(relativePath: String?): String? = relativePath
         ?.takeIf { it.isNotBlank() && it != "__EXCEL_IMPORT__" }
-        ?.let { "${config.publicBaseUrl}/uploads/${it.trimStart('/')}" }
+        ?.let { uploadAccessPolicy.url(config.publicBaseUrl, it) }
+
+    fun canReadUpload(relativePath: String, expires: String?, signature: String?): Boolean =
+        uploadAccessPolicy.canRead(relativePath, expires, signature)
+
+    fun isPrivateUpload(relativePath: String): Boolean = uploadAccessPolicy.isPrivate(relativePath)
 
     private fun userDto(connection: Connection, userId: Long): UserDto {
         // El inicio de sesión debe depender únicamente de la tabla usuarios.

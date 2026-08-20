@@ -15,6 +15,7 @@ import com.impulsosocial.server.service.AppException
 import com.impulsosocial.server.service.AppService
 import com.impulsosocial.server.service.ForbiddenException
 import com.impulsosocial.server.service.NotFoundException
+import com.impulsosocial.server.service.UploadPolicy
 import io.ktor.http.*
 import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
@@ -369,8 +370,21 @@ fun Application.module() {
                 ?.trim('/')
                 ?.takeIf { it.isNotBlank() }
                 ?: throw NotFoundException("Archivo no encontrado.")
+            if (!service.canReadUpload(
+                    relativePath,
+                    call.request.queryParameters["expires"],
+                    call.request.queryParameters["signature"]
+                )
+            ) {
+                throw ForbiddenException("El enlace del archivo no es válido o ya venció.")
+            }
             val file = resolveUploadFile(uploadRoots, relativePath)
                 ?: throw NotFoundException("Archivo no encontrado.")
+            call.response.header("X-Content-Type-Options", "nosniff")
+            call.response.header(
+                HttpHeaders.CacheControl,
+                if (service.isPrivateUpload(relativePath)) "private, no-store" else "public, max-age=3600"
+            )
             call.respondFile(file)
         }
 
@@ -534,95 +548,11 @@ fun Application.module() {
         }
 
         post("/api/v1/usuarios/{id}/document-verification") {
-            val userId = call.parameters["id"]?.toLongOrNull() ?: throw AppException("Identificador de usuario inválido.")
-            val registrationToken = call.request.headers["X-Registration-Token"] ?: throw ForbiddenException("Falta la autorización temporal de registro.")
-            var documentType: String? = null
-            var documentNumber: String? = null
-            var frontPath: String? = null
-            var backPath: String? = null
-            var selfiePath: String? = null
-
-            call.receiveMultipart(formFieldLimit = 25 * 1024 * 1024).forEachPart { part ->
-                try {
-                    when (part) {
-                        is PartData.FormItem -> when (part.name) {
-                            "documentType" -> documentType = part.value
-                            "documentNumber" -> documentNumber = part.value
-                        }
-                        is PartData.FileItem -> {
-                            val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readBytes()
-                            if (bytes.size > 12 * 1024 * 1024) throw AppException("Cada archivo debe pesar menos de 12 MB.")
-                            val stored = service.storeUpload("documents", userId.toString(), part.originalFileName ?: "archivo.bin", bytes)
-                            when (part.name) {
-                                "front" -> frontPath = stored.relativePath
-                                "back" -> backPath = stored.relativePath
-                                "selfie" -> selfiePath = stored.relativePath
-                            }
-                        }
-                        else -> Unit
-                    }
-                } finally {
-                    part.dispose()
-                }
-            }
-            val front = frontPath ?: throw AppException("Debes tomar una foto de tu documento de identidad.")
-            val selfie = selfiePath ?: throw AppException("Debes tomar una selfie actual para validar tu identidad.")
-            service.submitDocumentVerification(
-                userId = userId,
-                registrationToken = registrationToken,
-                documentType = documentType ?: "NATIONAL_ID",
-                documentNumber = documentNumber ?: throw AppException("Ingresa el número del documento."),
-                frontPath = front,
-                backPath = backPath,
-                selfiePath = selfie
-            )
-            call.respond(HttpStatusCode.Created, MessageResponse("Documento enviado para revisión."))
+            handleRegistrationDocumentVerification(call, service)
         }
 
         post("/api/v1/users/{id}/document-verification") {
-            val userId = call.parameters["id"]?.toLongOrNull() ?: throw AppException("Identificador de usuario inválido.")
-            val registrationToken = call.request.headers["X-Registration-Token"] ?: throw ForbiddenException("Falta la autorización temporal de registro.")
-            var documentType: String? = null
-            var documentNumber: String? = null
-            var frontPath: String? = null
-            var backPath: String? = null
-            var selfiePath: String? = null
-
-            call.receiveMultipart(formFieldLimit = 25 * 1024 * 1024).forEachPart { part ->
-                try {
-                    when (part) {
-                        is PartData.FormItem -> when (part.name) {
-                            "documentType" -> documentType = part.value
-                            "documentNumber" -> documentNumber = part.value
-                        }
-                        is PartData.FileItem -> {
-                            val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readBytes()
-                            if (bytes.size > 12 * 1024 * 1024) throw AppException("Cada archivo debe pesar menos de 12 MB.")
-                            val stored = service.storeUpload("documents", userId.toString(), part.originalFileName ?: "archivo.bin", bytes)
-                            when (part.name) {
-                                "front" -> frontPath = stored.relativePath
-                                "back" -> backPath = stored.relativePath
-                                "selfie" -> selfiePath = stored.relativePath
-                            }
-                        }
-                        else -> Unit
-                    }
-                } finally {
-                    part.dispose()
-                }
-            }
-            val front = frontPath ?: throw AppException("Debes tomar una foto de tu documento de identidad.")
-            val selfie = selfiePath ?: throw AppException("Debes tomar una selfie actual para validar tu identidad.")
-            service.submitDocumentVerification(
-                userId = userId,
-                registrationToken = registrationToken,
-                documentType = documentType ?: "NATIONAL_ID",
-                documentNumber = documentNumber ?: throw AppException("Ingresa el número del documento."),
-                frontPath = front,
-                backPath = backPath,
-                selfiePath = selfie
-            )
-            call.respond(HttpStatusCode.Created, MessageResponse("Documento enviado para revisión."))
+            handleRegistrationDocumentVerification(call, service)
         }
 
         // Cambios 32: los tokens push solo se registran dentro de una sesión autenticada.
@@ -889,17 +819,30 @@ fun Application.module() {
                         var frontPath: String? = null
                         var backPath: String? = null
                         var selfiePath: String? = null
+                        var accountCreated = false
                         try {
                             call.receiveMultipart(formFieldLimit = 40 * 1024 * 1024).forEachPart { part ->
                                 try {
                                     when (part) {
                                         is PartData.FormItem -> part.name?.let { fields[it] = part.value }
                                         is PartData.FileItem -> {
+                                            val fieldName = part.name
+                                            if (fieldName !in setOf("front", "back", "selfie")) return@forEachPart
+                                            val alreadyReceived = when (fieldName) {
+                                                "front" -> frontPath != null
+                                                "back" -> backPath != null
+                                                else -> selfiePath != null
+                                            }
+                                            if (alreadyReceived) throw AppException("Cada documento del personal debe enviarse una sola vez.")
                                             val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readBytes()
                                             if (bytes.size > 12 * 1024 * 1024) throw AppException("Cada documento debe pesar menos de 12 MB.")
+                                            val validated = UploadPolicy.validate("documents", bytes)
+                                            if (fieldName == "selfie" && !validated.image) {
+                                                throw AppException("La selfie del personal debe ser una imagen JPG, PNG o WEBP.")
+                                            }
                                             val stored = service.storeUpload("staff-documents", uploadOwner, part.originalFileName ?: "documento.bin", bytes)
                                             storedFiles += stored.absoluteFile
-                                            when (part.name) {
+                                            when (fieldName) {
                                                 "front" -> frontPath = stored.relativePath
                                                 "back" -> backPath = stored.relativePath
                                                 "selfie" -> selfiePath = stored.relativePath
@@ -944,9 +887,10 @@ fun Application.module() {
                                 backPath = backPath,
                                 selfiePath = selfiePath ?: throw AppException("Carga una selfie actual del personal.")
                             )
+                            accountCreated = true
                             call.respond(HttpStatusCode.Created, result)
                         } catch (error: Throwable) {
-                            storedFiles.forEach { runCatching { it.delete() } }
+                            if (!accountCreated) storedFiles.forEach { runCatching { it.delete() } }
                             throw error
                         }
                     }
@@ -1649,6 +1593,87 @@ private fun ApplicationCall.requirePermission(service: AppService, permission: S
 
 private fun ApplicationCall.requireAnyPermission(service: AppService, vararg permissions: String) {
     service.requireAnyPermission(userId(), *permissions)
+}
+
+private suspend fun handleRegistrationDocumentVerification(call: ApplicationCall, service: AppService) {
+    val userId = call.parameters["id"]?.toLongOrNull()
+        ?: throw AppException("Identificador de usuario inválido.")
+    val registrationToken = call.request.headers["X-Registration-Token"]
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: throw ForbiddenException("Falta la autorización temporal de registro.")
+
+    // La capacidad se valida antes de leer el cuerpo y escribir en el volumen.
+    service.validateRegistrationDocumentToken(userId, registrationToken)
+
+    var documentType: String? = null
+    var documentNumber: String? = null
+    var frontPath: String? = null
+    var backPath: String? = null
+    var selfiePath: String? = null
+    val storedFiles = mutableListOf<File>()
+    var submitted = false
+
+    try {
+        call.receiveMultipart(formFieldLimit = 25 * 1024 * 1024).forEachPart { part ->
+            try {
+                when (part) {
+                    is PartData.FormItem -> when (part.name) {
+                        "documentType" -> documentType = part.value
+                        "documentNumber" -> documentNumber = part.value
+                    }
+                    is PartData.FileItem -> {
+                        val fieldName = part.name
+                        if (fieldName !in setOf("front", "back", "selfie")) return@forEachPart
+                        val alreadyReceived = when (fieldName) {
+                            "front" -> frontPath != null
+                            "back" -> backPath != null
+                            else -> selfiePath != null
+                        }
+                        if (alreadyReceived) throw AppException("Cada archivo de verificación debe enviarse una sola vez.")
+
+                        val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readBytes()
+                        if (bytes.size > 12 * 1024 * 1024) throw AppException("Cada archivo debe pesar menos de 12 MB.")
+                        val validated = UploadPolicy.validate("documents", bytes)
+                        if (fieldName == "selfie" && !validated.image) {
+                            throw AppException("La selfie debe ser una imagen JPG, PNG o WEBP.")
+                        }
+                        val stored = service.storeUpload(
+                            "documents",
+                            userId.toString(),
+                            part.originalFileName ?: "archivo.bin",
+                            bytes
+                        )
+                        storedFiles += stored.absoluteFile
+                        when (fieldName) {
+                            "front" -> frontPath = stored.relativePath
+                            "back" -> backPath = stored.relativePath
+                            "selfie" -> selfiePath = stored.relativePath
+                        }
+                    }
+                    else -> Unit
+                }
+            } finally {
+                part.dispose()
+            }
+        }
+
+        service.submitDocumentVerification(
+            userId = userId,
+            registrationToken = registrationToken,
+            documentType = documentType ?: "NATIONAL_ID",
+            documentNumber = documentNumber ?: throw AppException("Ingresa el número del documento."),
+            frontPath = frontPath ?: throw AppException("Debes tomar una foto de tu documento de identidad."),
+            backPath = backPath,
+            selfiePath = selfiePath ?: throw AppException("Debes tomar una selfie actual para validar tu identidad.")
+        )
+        submitted = true
+    } catch (error: Throwable) {
+        if (!submitted) storedFiles.forEach { file -> runCatching { file.delete() } }
+        throw error
+    }
+
+    call.respond(HttpStatusCode.Created, MessageResponse("Documento enviado para revisión."))
 }
 
 
