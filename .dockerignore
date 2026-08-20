@@ -1,0 +1,14 @@
+.git
+.github
+.gradle
+build
+.idea
+*.iml
+*.zip
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+.env
+service-account.json
+runtime
+backups
+uploads
