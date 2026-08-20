@@ -221,8 +221,6 @@ class Database(private val config: AppConfig) {
             "movimientos_presupuestarios",
             "evaluaciones_predictivas",
             "corridas_predictivas_presupuesto",
-            "vinculaciones_telegram",
-            "enlaces_vinculacion_telegram",
             "reportes_pago_usuario",
             "conciliaciones_pago",
             "solicitudes_doble_aprobacion",

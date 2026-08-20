@@ -6,7 +6,6 @@ import com.impulsosocial.server.db.Database
 import com.impulsosocial.server.export.ExcelExporter
 import com.impulsosocial.server.integrations.BcvRateService
 import com.impulsosocial.server.integrations.PushNotificationService
-import com.impulsosocial.server.integrations.TelegramService
 import com.impulsosocial.server.integrations.RecaptchaService
 import com.impulsosocial.server.model.*
 import com.impulsosocial.server.security.JwtService
@@ -68,10 +67,6 @@ fun Application.module() {
     val jwt = JwtService(config)
     val pushNotifications = PushNotificationService(config)
     val bcvRateService = BcvRateService()
-    val telegramService = TelegramService(config)
-    // 1.0.0: el módulo se conserva para una futura reactivación, pero no participa
-    // en registro, inicio de sesión, recuperación ni revisión de identidad.
-    val telegramValidationEnabled = false
     val recaptchaService = RecaptchaService(config)
     val service = AppService(
         database = database,
@@ -79,7 +74,6 @@ fun Application.module() {
         passwordSecurity = security,
         pushNotifications = pushNotifications,
         bcvRateService = bcvRateService,
-        telegramService = telegramService,
         recaptchaService = recaptchaService
     )
     val exporter = ExcelExporter(database)
@@ -121,15 +115,6 @@ fun Application.module() {
         appLogger.info("Firebase Cloud Messaging: CONFIGURADO")
     } else {
         appLogger.warn("Firebase Cloud Messaging: NO CONFIGURADO. En nube define FIREBASE_SERVICE_ACCOUNT_BASE64 o FIREBASE_SERVICE_ACCOUNT_JSON; en Windows puedes seguir usando la ruta al archivo JSON")
-    }
-    if (telegramValidationEnabled && telegramService.enabled) {
-        appLogger.info("Bot de Telegram Credicash: CONFIGURADO · @{}", config.telegramBotUsername)
-        startupScope.launch {
-            runCatching { telegramService.configureWebhook() }
-                .onFailure { error -> appLogger.error("No fue posible configurar el webhook de Telegram.", error) }
-        }
-    } else {
-        appLogger.info("Bot de Telegram Credicash: DESACTIVADO para la versión {}.", CREDICASH_APP_VERSION)
     }
     if (recaptchaService.configured) {
         appLogger.info("reCAPTCHA Enterprise: CONFIGURADO · score mínimo {}", config.recaptchaMinScore)
@@ -307,8 +292,7 @@ fun Application.module() {
                 mapOf(
                     "service" to "Credicash",
                     "status" to "running",
-                    "version" to CREDICASH_APP_VERSION,
-                    "telegram" to if (telegramValidationEnabled && telegramService.enabled) "configured" else "disabled"
+                    "version" to CREDICASH_APP_VERSION
                 )
             )
         }
@@ -326,7 +310,6 @@ fun Application.module() {
                     status = if (phase == StartupPhase.READY) "ok" else "starting",
                     database = databaseStatus,
                     version = CREDICASH_APP_VERSION,
-                    telegram = if (telegramValidationEnabled && telegramService.enabled) "configured" else "disabled",
                     push = if (pushNotifications.enabled) "configured" else "unavailable",
                     recaptcha = when {
                         recaptchaService.configured -> "configured"
@@ -348,7 +331,6 @@ fun Application.module() {
                     "database" to if (databaseOk) "connected" else "unavailable",
                     "schema" to phase.name.lowercase(),
                     "push" to if (pushNotifications.enabled) "configured" else "unavailable",
-                    "telegram" to if (telegramValidationEnabled && telegramService.enabled) "configured" else "disabled",
                     "recaptcha" to when {
                         recaptchaService.configured -> "configured"
                         config.recaptchaRequired -> "required_but_unavailable"
@@ -495,26 +477,11 @@ fun Application.module() {
             }
         }
 
-        post("/api/v1/integrations/telegram/webhook") {
-            // Se conserva la ruta para una futura reactivación, pero 1.0.0 no procesa
-            // vinculaciones, códigos ni validaciones del bot.
-            call.respond(HttpStatusCode.Gone, mapOf("ok" to false, "status" to "disabled"))
-        }
-
         route("/api/v1/auth") {
             post("/register") { call.respond(HttpStatusCode.Created, service.register(call.receive())) }
             post("/login") { call.respond(service.login(call.receive<LoginRequest>()).response) }
 
-            // Credicash 1.0.0: Telegram se conserva en código para una futura reactivación,
-            // pero queda completamente fuera del flujo activo de registro/validación.
-            post("/verify-telegram") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
-            post("/telegram/verify") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
-            post("/resend-telegram-verification") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
-            post("/telegram/resend") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
-            post("/telegram/link/status") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
-            post("/telegram/status") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
-
-            // Recuperación automática temporalmente fuera de servicio para no depender del bot.
+            // Recuperación automática temporalmente fuera de servicio.
             // El restablecimiento se gestiona administrativamente en esta actualización.
             post("/forgot-password") { throw AppException("La recuperación automática está desactivada. Solicita a un Administrador el restablecimiento de tu acceso.") }
             post("/password/forgot") { throw AppException("La recuperación automática está desactivada. Solicita a un Administrador el restablecimiento de tu acceso.") }
@@ -590,9 +557,6 @@ fun Application.module() {
                     service.heartbeatSession(call.userId(), call.sessionId())
                     call.respond(MessageResponse("Sesión activa."))
                 }
-                post("/me/telegram-link") { throw AppException("La vinculación por Telegram está desactivada en esta versión.") }
-                get("/me/telegram-status") { throw AppException("La vinculación por Telegram está desactivada en esta versión.") }
-                post("/me/telegram-status") { throw AppException("La vinculación por Telegram está desactivada en esta versión.") }
                 post("/me/persistent-session") {
                     service.heartbeatSession(call.userId(), call.sessionId())
                     call.respond(PersistentSessionResponse(call.sessionId().toString()))

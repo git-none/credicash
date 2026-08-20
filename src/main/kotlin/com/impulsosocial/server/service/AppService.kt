@@ -10,8 +10,6 @@ import com.impulsosocial.server.model.*
 import com.impulsosocial.server.integrations.PushNotificationService
 import com.impulsosocial.server.integrations.BcvRateService
 import com.impulsosocial.server.integrations.BcvRate
-import com.impulsosocial.server.integrations.TelegramDeliveryException
-import com.impulsosocial.server.integrations.TelegramService
 import com.impulsosocial.server.integrations.RecaptchaService
 import com.impulsosocial.server.security.PasswordSecurity
 import com.impulsosocial.server.security.PasswordPolicy
@@ -23,7 +21,6 @@ import java.io.ByteArrayInputStream
 import java.security.MessageDigest
 import java.security.KeyFactory
 import java.security.spec.X509EncodedKeySpec
-import java.security.SecureRandom
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -49,40 +46,6 @@ data class LoginDecision(val response: LoginResponse)
 
 private data class RegistrationCreation(val userId: Long, val registrationToken: String)
 private data class UserProvenance(val createdByUserId: Long?, val createdByUsername: String?, val createdByName: String?, val registrationSource: String?)
-private data class TelegramCodeCreation(
-    val userId: Long,
-    val code: String?,
-    val alreadyVerified: Boolean,
-    val telegramLinked: Boolean,
-    val telegramLinkUrl: String? = null,
-    val chatId: Long? = null,
-    val firstName: String? = null
-)
-private data class TelegramBinding(
-    val chatId: Long,
-    val telegramUserId: Long,
-    val firstName: String?
-)
-private data class TelegramCodeDelivery(
-    val userId: Long,
-    val chatId: Long,
-    val code: String,
-    val firstName: String?
-)
-private data class TelegramLinkResult(
-    val userId: Long,
-    val firstName: String?,
-    val alreadyVerified: Boolean,
-    val delivery: TelegramCodeDelivery?
-)
-private data class TelegramLinkAccountRow(
-    val linkId: Long,
-    val userId: Long,
-    val alreadyVerified: Boolean,
-    val firstName: String?,
-    val expectedTelegramUsername: String?
-)
-
 data class StoredUpload(val relativePath: String, val absoluteFile: File)
 
 private data class AdminWalletCompliance(
@@ -141,7 +104,6 @@ class AppService(
     private val passwordSecurity: PasswordSecurity,
     private val pushNotifications: PushNotificationService,
     private val bcvRateService: BcvRateService,
-    private val telegramService: TelegramService,
     private val recaptchaService: RecaptchaService
 ) {
     private val logger = LoggerFactory.getLogger(AppService::class.java)
@@ -150,7 +112,6 @@ class AppService(
     private val MAX_PIN_ATTEMPTS = 5
     private val uploadRoot = File(config.uploadDir).apply { mkdirs() }
     private val uploadAccessPolicy = UploadAccessPolicy(config.jwtSecret)
-    private val secureRandom = SecureRandom()
     private val notificationExecutor = Executors.newFixedThreadPool(2) { task ->
         Thread(task, "credicash-push").apply { isDaemon = true }
     }
@@ -629,7 +590,6 @@ class AppService(
         verifyRecaptcha(request.recaptchaToken ?: request.captchaToken, "register")
         val username = validateUsername(request.username)
         val email = request.email.trim().lowercase()
-        val telegramUsername: String? = null // 7.2.6: Telegram no participa en registro ni validación activa.
         val firstName = request.firstName.trim()
         val middleName = request.middleName.trim()
         val lastName = request.lastName.trim()
@@ -688,17 +648,16 @@ class AppService(
             val userId = connection.prepareStatement(
                 """
                 INSERT INTO usuarios(
-                    username,email,telegram_username_registro,password_hash,pin_hash,role,account_status,verification_status,email_verified
+                    username,email,password_hash,pin_hash,role,account_status,verification_status,email_verified
                 )
-                VALUES (?,?,?,?,?,'BENEFICIARY','PENDING_VERIFICATION','NOT_SUBMITTED',TRUE)
+                VALUES (?,?,?,?,'BENEFICIARY','PENDING_VERIFICATION','NOT_SUBMITTED',TRUE)
                 RETURNING id
                 """.trimIndent()
             ).use { statement ->
                 statement.setString(1, username)
                 statement.setString(2, email)
-                statement.setString(3, telegramUsername)
-                statement.setString(4, passwordSecurity.hash(request.password))
-                statement.setString(5, passwordSecurity.hash(request.pin))
+                statement.setString(3, passwordSecurity.hash(request.password))
+                statement.setString(4, passwordSecurity.hash(request.pin))
                 statement.executeQuery().use { result -> result.next(); result.getLong(1) }
             }
 
@@ -751,10 +710,7 @@ class AppService(
             userId = creation.userId,
             verificationStatus = "NOT_SUBMITTED",
             registrationToken = creation.registrationToken,
-            accountVerified = true,
-            telegramVerificationRequired = false,
-            telegramLinked = false,
-            telegramLinkUrl = null
+            accountVerified = true
         )
 
         notifyUsers(listOf(response.userId), "Bienvenido a Credicash", "Tu usuario fue creado. Completa la verificación para activar todas las funciones.", "WELCOME")
@@ -853,8 +809,7 @@ class AppService(
                         userId = -row.id,
                         verificationStatus = "INVALID_CREDENTIALS",
                         email = "",
-                        accountVerified = false,
-                        telegramVerificationRequired = false
+                        accountVerified = false
                     )
                 )
             }
@@ -878,8 +833,7 @@ class AppService(
                     accountStatus = "SUSPENDED",
                     suspensionReason = row.suspensionReason ?: "Falta de pago",
                     suspendedAt = row.suspendedAt?.toString(),
-                    accountVerified = row.accountVerified,
-                    telegramVerificationRequired = false
+                    accountVerified = row.accountVerified
                 )
                 row.verificationStatus == "VERIFIED" && row.accountStatus == "ACTIVE" -> LoginResponse(
                     userId = row.id,
@@ -887,8 +841,7 @@ class AppService(
                     email = row.email,
                     accountStatus = row.accountStatus,
                     pinChallengeToken = createChallenge(connection, row.id, "LOGIN_PIN", 15).toString(),
-                    accountVerified = true,
-                    telegramVerificationRequired = false
+                    accountVerified = true
                 )
                 else -> LoginResponse(
                     userId = row.id,
@@ -896,8 +849,7 @@ class AppService(
                     email = row.email,
                     accountStatus = row.accountStatus,
                     registrationToken = createChallenge(connection, row.id, "REGISTRATION_DOCUMENT", 24 * 60).toString(),
-                    accountVerified = true,
-                    telegramVerificationRequired = false
+                    accountVerified = true
                 )
             }
             LoginDecision(response)
@@ -908,567 +860,6 @@ class AppService(
         return decision
     }
 
-    fun verifyRegistrationTelegram(request: TelegramVerificationRequest): SecurityActionResponse {
-        verifyRecaptcha(request.recaptchaToken ?: request.captchaToken, "telegram_verification")
-        val email = request.email.trim().lowercase()
-        val code = (request.code ?: request.verificationCode).orEmpty().trim()
-        if (!code.matches(Regex("\\d{6}"))) throw AppException("Ingresa el código de 6 dígitos recibido por Telegram.")
-
-        return database.transaction { connection ->
-            val userId = connection.prepareStatement(
-                "SELECT id FROM usuarios WHERE id=? AND LOWER(email)=LOWER(?)"
-            ).use { statement ->
-                statement.setLong(1, request.userId)
-                statement.setString(2, email)
-                statement.executeQuery().use { result ->
-                    if (!result.next()) throw AppException("No fue posible validar la cuenta.")
-                    result.getLong(1)
-                }
-            }
-            val binding = telegramBinding(connection, userId)
-                ?: throw AppException("Primero vincula el bot oficial de Credicash en Telegram.")
-            consumeSecurityCode(userId, binding.chatId.toString(), "ACCOUNT_VERIFICATION", code)
-            connection.prepareStatement(
-                "UPDATE usuarios SET email_verified=TRUE,updated_at=NOW() WHERE id=?"
-            ).use { statement ->
-                statement.setLong(1, userId)
-                statement.executeUpdate()
-            }
-            val registrationToken = createChallenge(connection, userId, "REGISTRATION_DOCUMENT", 24 * 60).toString()
-            audit(connection, userId, "TELEGRAM_VERIFIED", "USER", userId.toString(), "Cuenta verificada mediante Telegram")
-            SecurityActionResponse(
-                message = "Cuenta verificada correctamente mediante Telegram.",
-                registrationToken = registrationToken,
-                userId = userId,
-                accountVerified = true,
-                telegramLinked = true
-            )
-        }
-    }
-
-    fun resendRegistrationTelegram(request: TelegramResendRequest): SecurityActionResponse {
-        verifyRecaptcha(request.recaptchaToken ?: request.captchaToken, "resend_telegram_verification")
-        if (!telegramService.enabled) {
-            logger.error("Reenvío bloqueado porque Telegram no está disponible: {}", telegramService.configurationProblem)
-            throw AppException(telegramService.unavailableMessage())
-        }
-        val email = request.email.trim().lowercase()
-
-        val creation = database.transaction { connection ->
-            val row = connection.prepareStatement(
-                "SELECT id,email_verified FROM usuarios WHERE id=? AND LOWER(email)=LOWER(?)"
-            ).use { statement ->
-                statement.setLong(1, request.userId)
-                statement.setString(2, email)
-                statement.executeQuery().use { result ->
-                    if (!result.next()) throw AppException("No fue posible localizar la cuenta.")
-                    result.getLong(1) to result.getBoolean(2)
-                }
-            }
-            if (row.second) {
-                return@transaction TelegramCodeCreation(
-                    userId = row.first,
-                    code = null,
-                    alreadyVerified = true,
-                    telegramLinked = telegramBinding(connection, row.first) != null
-                )
-            }
-
-            val binding = telegramBinding(connection, row.first)
-            if (binding == null) {
-                val link = telegramService.deepLink(issueTelegramLink(connection, row.first, "ACCOUNT_VERIFICATION"))
-                return@transaction TelegramCodeCreation(
-                    userId = row.first,
-                    code = null,
-                    alreadyVerified = false,
-                    telegramLinked = false,
-                    telegramLinkUrl = link
-                )
-            }
-
-            enforceSecurityCodeCooldown(connection, row.first, "ACCOUNT_VERIFICATION")
-            TelegramCodeCreation(
-                userId = row.first,
-                code = issueSecurityCode(connection, row.first, binding.chatId.toString(), "ACCOUNT_VERIFICATION"),
-                alreadyVerified = false,
-                telegramLinked = true,
-                chatId = binding.chatId,
-                firstName = binding.firstName
-            )
-        }
-
-        if (creation.alreadyVerified) {
-            return SecurityActionResponse(
-                message = "La cuenta ya está verificada.",
-                userId = creation.userId,
-                accountVerified = true,
-                telegramLinked = creation.telegramLinked
-            )
-        }
-
-        if (!creation.telegramLinked) {
-            return SecurityActionResponse(
-                message = "Abre el bot oficial de Credicash, pulsa Iniciar y vuelve a la aplicación para escribir el código.",
-                userId = creation.userId,
-                accountVerified = false,
-                telegramLinked = false,
-                telegramLinkUrl = creation.telegramLinkUrl
-            )
-        }
-
-        try {
-            telegramService.sendAccountVerificationCode(
-                chatId = requireNotNull(creation.chatId),
-                code = requireNotNull(creation.code),
-                firstName = creation.firstName
-            )
-        } catch (error: TelegramDeliveryException) {
-            cleanupUnsentSecurityCode(creation.userId, "ACCOUNT_VERIFICATION")
-            logger.error("No fue posible reenviar el código por Telegram al usuario {}.", creation.userId, error)
-            throw AppException(error.userMessage)
-        } catch (error: Throwable) {
-            cleanupUnsentSecurityCode(creation.userId, "ACCOUNT_VERIFICATION")
-            logger.error("Fallo inesperado al reenviar el código por Telegram al usuario {}.", creation.userId, error)
-            throw AppException("No pudimos enviar el código por Telegram. Inténtalo nuevamente en unos minutos.")
-        }
-
-        return SecurityActionResponse(
-            message = "Enviamos un nuevo código al bot de Credicash en Telegram.",
-            userId = creation.userId,
-            accountVerified = false,
-            telegramLinked = true
-        )
-    }
-
-    fun telegramLinkStatus(request: TelegramResendRequest): SecurityActionResponse = database.transaction { connection ->
-        val email = request.email.trim().lowercase()
-        val row = connection.prepareStatement(
-            "SELECT id,email_verified FROM usuarios WHERE id=? AND LOWER(email)=LOWER(?)"
-        ).use { statement ->
-            statement.setLong(1, request.userId)
-            statement.setString(2, email)
-            statement.executeQuery().use { result ->
-                if (!result.next()) throw AppException("No fue posible localizar la cuenta.")
-                result.getLong(1) to result.getBoolean(2)
-            }
-        }
-        val linked = telegramBinding(connection, row.first) != null
-        SecurityActionResponse(
-            message = when {
-                row.second -> "La cuenta ya está verificada mediante Telegram."
-                linked -> "Código enviado al bot de Credicash en Telegram."
-                else -> "Telegram todavía no está vinculado. Abre el bot y pulsa Iniciar."
-            },
-            userId = row.first,
-            accountVerified = row.second,
-            telegramLinked = linked
-        )
-    }
-
-    fun requestPasswordReset(request: PasswordResetRequest): SecurityActionResponse {
-        if (!config.passwordRecoveryEnabled) {
-            throw AppException("La recuperación de contraseña está temporalmente deshabilitada.")
-        }
-        verifyRecaptcha(request.recaptchaToken ?: request.captchaToken, "password_reset_request")
-        if (!telegramService.enabled) throw AppException(telegramService.unavailableMessage())
-        val identifier = (request.identifier ?: request.email).orEmpty().trim()
-        if (identifier.isBlank()) throw AppException("Ingresa tu usuario o correo electrónico.")
-
-        val creation = database.transaction { connection ->
-            val row = connection.prepareStatement(
-                """
-                SELECT u.id,vt.telegram_chat_id,p.first_name
-                FROM usuarios u
-                LEFT JOIN vinculaciones_telegram vt ON vt.user_id=u.id AND vt.active=TRUE
-                LEFT JOIN perfiles_usuario p ON p.user_id=u.id
-                WHERE LOWER(u.email)=LOWER(?) OR LOWER(u.username)=LOWER(?)
-                ORDER BY CASE WHEN LOWER(u.username)=LOWER(?) THEN 0 ELSE 1 END
-                LIMIT 1
-                """.trimIndent()
-            ).use { statement ->
-                statement.setString(1, identifier)
-                statement.setString(2, identifier)
-                statement.setString(3, identifier)
-                statement.executeQuery().use { result ->
-                    if (!result.next()) null else Triple(
-                        result.getLong(1),
-                        result.getObject(2)?.let { result.getLong(2) },
-                        result.getString(3)
-                    )
-                }
-            } ?: return@transaction null
-
-            val chatId = row.second ?: return@transaction null
-            enforceSecurityCodeCooldown(connection, row.first, "PASSWORD_RESET")
-            TelegramCodeDelivery(
-                userId = row.first,
-                chatId = chatId,
-                code = issueSecurityCode(connection, row.first, chatId.toString(), "PASSWORD_RESET"),
-                firstName = row.third
-            )
-        }
-
-        if (creation != null) {
-            try {
-                telegramService.sendPasswordResetCode(creation.chatId, creation.code, creation.firstName)
-                database.transaction { connection ->
-                    audit(connection, creation.userId, "PASSWORD_RESET_REQUESTED", "USER", creation.userId.toString(), "Código enviado mediante Telegram")
-                }
-            } catch (error: TelegramDeliveryException) {
-                cleanupUnsentSecurityCode(creation.userId, "PASSWORD_RESET")
-                logger.error("No fue posible enviar recuperación por Telegram al usuario {}.", creation.userId, error)
-                throw AppException(error.userMessage)
-            } catch (error: Throwable) {
-                cleanupUnsentSecurityCode(creation.userId, "PASSWORD_RESET")
-                logger.error("Fallo inesperado al enviar recuperación por Telegram al usuario {}.", creation.userId, error)
-                throw AppException("No pudimos enviar el código de recuperación por Telegram. Inténtalo nuevamente en unos minutos.")
-            }
-        }
-
-        return SecurityActionResponse(
-            message = "Si la cuenta está registrada y tiene Telegram vinculado, recibirá un código en el bot oficial de Credicash."
-        )
-    }
-
-    fun resetPassword(request: PasswordResetConfirmRequest): SecurityActionResponse {
-        if (!config.passwordRecoveryEnabled) {
-            throw AppException("La recuperación de contraseña está temporalmente deshabilitada.")
-        }
-        verifyRecaptcha(request.recaptchaToken ?: request.captchaToken, "password_reset")
-        val identifier = (request.identifier ?: request.email).orEmpty().trim().lowercase()
-        if (identifier.isBlank()) throw AppException("Ingresa tu usuario o correo electrónico.")
-        val code = (request.code ?: request.verificationCode).orEmpty().trim()
-        val newPassword = (request.newPassword ?: request.password).orEmpty()
-
-        if (!code.matches(Regex("\\d{6}"))) throw AppException("Ingresa el código de 6 dígitos recibido por Telegram.")
-        PasswordPolicy.validationError(newPassword, identifier, identifier.takeIf { it.contains('@') })?.let { throw AppException(it.replace("La contraseña", "La nueva contraseña")) }
-
-        return database.transaction { connection ->
-            val row = connection.prepareStatement(
-                """
-                SELECT u.id,vt.telegram_chat_id
-                FROM usuarios u
-                LEFT JOIN vinculaciones_telegram vt ON vt.user_id=u.id AND vt.active=TRUE
-                WHERE LOWER(u.email)=LOWER(?) OR LOWER(u.username)=LOWER(?)
-                ORDER BY CASE WHEN LOWER(u.username)=LOWER(?) THEN 0 ELSE 1 END
-                LIMIT 1
-                """.trimIndent()
-            ).use { statement ->
-                statement.setString(1, identifier)
-                statement.setString(2, identifier)
-                statement.setString(3, identifier)
-                statement.executeQuery().use { result ->
-                    if (!result.next()) throw AppException("El código no es válido o ya venció.")
-                    result.getLong(1) to result.getObject(2)?.let { result.getLong(2) }
-                }
-            }
-            val userId = row.first
-            val chatId = row.second ?: throw AppException("La cuenta no tiene Telegram vinculado.")
-            consumeSecurityCode(userId, chatId.toString(), "PASSWORD_RESET", code)
-            connection.prepareStatement(
-                "UPDATE usuarios SET password_hash=?,failed_login_attempts=0,locked_until=NULL,updated_at=NOW() WHERE id=?"
-            ).use { statement ->
-                statement.setString(1, passwordSecurity.hash(newPassword))
-                statement.setLong(2, userId)
-                statement.executeUpdate()
-            }
-            connection.prepareStatement(
-                "UPDATE sesiones_usuario SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL"
-            ).use { statement ->
-                statement.setLong(1, userId)
-                statement.executeUpdate()
-            }
-            connection.prepareStatement(
-                "UPDATE desafios_autenticacion SET used_at=NOW() WHERE user_id=? AND used_at IS NULL"
-            ).use { statement ->
-                statement.setLong(1, userId)
-                statement.executeUpdate()
-            }
-            audit(connection, userId, "PASSWORD_RESET_COMPLETED", "USER", userId.toString(), "Contraseña restablecida con código de Telegram y sesiones revocadas")
-            SecurityActionResponse(
-                message = "Contraseña actualizada correctamente. Inicia sesión nuevamente.",
-                userId = userId,
-                telegramLinked = true
-            )
-        }
-    }
-
-    fun createAuthenticatedTelegramLink(userId: Long): SecurityActionResponse {
-        if (!telegramService.enabled) {
-            logger.error("Vinculación autenticada bloqueada porque Telegram no está disponible: {}", telegramService.configurationProblem)
-            throw AppException(telegramService.unavailableMessage())
-        }
-
-        return database.transaction { connection ->
-            val accountExists = connection.prepareStatement(
-                "SELECT EXISTS(SELECT 1 FROM usuarios WHERE id=?)"
-            ).use { statement ->
-                statement.setLong(1, userId)
-                statement.executeQuery().use { result -> result.next(); result.getBoolean(1) }
-            }
-            if (!accountExists) throw NotFoundException("La cuenta ya no existe.")
-
-            val alreadyLinked = telegramBinding(connection, userId) != null
-            val linkToken = issueTelegramLink(connection, userId, "ACCOUNT_VERIFICATION")
-            SecurityActionResponse(
-                message = if (alreadyLinked) {
-                    "Abre el bot de Credicash para confirmar o actualizar tu Telegram de seguridad."
-                } else {
-                    "Abre el bot de Credicash y pulsa Iniciar para vincular tu Telegram de seguridad."
-                },
-                userId = userId,
-                telegramLinked = alreadyLinked,
-                telegramLinkUrl = telegramService.deepLink(linkToken)
-            )
-        }
-    }
-
-    fun authenticatedTelegramStatus(userId: Long): SecurityActionResponse = database.transaction { connection ->
-        val exists = connection.prepareStatement(
-            "SELECT EXISTS(SELECT 1 FROM usuarios WHERE id=?)"
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.executeQuery().use { result -> result.next(); result.getBoolean(1) }
-        }
-        if (!exists) throw NotFoundException("La cuenta ya no existe.")
-        val linked = telegramBinding(connection, userId) != null
-        SecurityActionResponse(
-            message = if (linked) {
-                "Los códigos de seguridad se enviarán al bot de Credicash en Telegram."
-            } else {
-                "Telegram todavía no está vinculado a esta cuenta."
-            },
-            userId = userId,
-            telegramLinked = linked
-        )
-    }
-
-    fun handleTelegramUpdate(update: TelegramUpdate) {
-        val message = update.message ?: return
-        if (!message.chat.type.equals("private", ignoreCase = true)) return
-        val from = message.from ?: return
-        if (from.is_bot) return
-        val text = message.text.orEmpty().trim()
-        val chatId = message.chat.id
-
-        when {
-            text.startsWith("/start") -> {
-                val token = text.substringAfter("/start", "").trim().substringBefore(' ')
-                if (token.isBlank()) {
-                    telegramService.sendHelp(chatId)
-                    return
-                }
-                try {
-                    val result = linkTelegramAndIssueVerificationCode(
-                        token = token,
-                        chatId = chatId,
-                        telegramUserId = from.id,
-                        username = from.username,
-                        firstName = from.first_name,
-                        lastName = from.last_name,
-                        languageCode = from.language_code
-                    )
-                    val delivery = result.delivery
-                    if (delivery != null) {
-                        try {
-                            telegramService.sendAccountVerificationCode(delivery.chatId, delivery.code, delivery.firstName)
-                        } catch (error: Throwable) {
-                            cleanupUnsentSecurityCode(delivery.userId, "ACCOUNT_VERIFICATION")
-                            throw error
-                        }
-                        // El bot envía únicamente el código solicitado. La aplicación confirma el estado.
-                    } else if (result.alreadyVerified) {
-                        logger.info("Telegram actualizado para una cuenta ya verificada; no se envió un mensaje adicional al chat {}.", chatId)
-                    }
-                } catch (error: AppException) {
-                    runCatching { telegramService.sendPlainMessage(chatId, error.message ?: "El enlace de vinculación no es válido o ya venció.") }
-                }
-            }
-            text.startsWith("/codigo") -> {
-                try {
-                    val delivery = issueTelegramCodeFromLinkedChat(chatId)
-                    if (delivery == null) {
-                        telegramService.sendPlainMessage(
-                            chatId,
-                            "Tu cuenta ya está verificada. Para recuperar la contraseña, solicita el código desde la aplicación Credicash."
-                        )
-                    } else {
-                        try {
-                            telegramService.sendAccountVerificationCode(delivery.chatId, delivery.code, delivery.firstName)
-                        } catch (error: Throwable) {
-                            cleanupUnsentSecurityCode(delivery.userId, "ACCOUNT_VERIFICATION")
-                            throw error
-                        }
-                    }
-                } catch (error: AppException) {
-                    runCatching { telegramService.sendPlainMessage(chatId, error.message ?: "No fue posible generar el código.") }
-                }
-            }
-            text.startsWith("/ayuda") || text.startsWith("/help") -> telegramService.sendHelp(chatId)
-            else -> telegramService.sendHelp(chatId)
-        }
-    }
-
-    private fun linkTelegramAndIssueVerificationCode(
-        token: String,
-        chatId: Long,
-        telegramUserId: Long,
-        username: String?,
-        firstName: String?,
-        lastName: String?,
-        languageCode: String?
-    ): TelegramLinkResult = database.transaction { connection ->
-        val tokenHash = sha256(token)
-        val link = connection.prepareStatement(
-            """
-            SELECT l.id,l.user_id,u.email_verified,p.first_name,u.telegram_username_registro
-            FROM enlaces_vinculacion_telegram l
-            JOIN usuarios u ON u.id=l.user_id
-            LEFT JOIN perfiles_usuario p ON p.user_id=u.id
-            WHERE l.token_hash=?
-              AND l.purpose='ACCOUNT_VERIFICATION'
-              AND l.used_at IS NULL
-              AND l.expires_at>NOW()
-            FOR UPDATE OF l
-            """.trimIndent()
-        ).use { statement ->
-            statement.setString(1, tokenHash)
-            statement.executeQuery().use { result ->
-                if (!result.next()) throw AppException("El enlace de Telegram no es válido o ya venció. Genera uno nuevo desde Credicash.")
-                TelegramLinkAccountRow(
-                    linkId = result.getLong("id"),
-                    userId = result.getLong("user_id"),
-                    alreadyVerified = result.getBoolean("email_verified"),
-                    firstName = result.getString("first_name"),
-                    expectedTelegramUsername = result.getString("telegram_username_registro")
-                )
-            }
-        }
-        val linkId = link.linkId
-        val userId = link.userId
-        val alreadyVerified = link.alreadyVerified
-        val profileFirstName = link.firstName
-        val actualTelegramUsername = username?.let(::normalizeTelegramUsername)?.takeIf { it.isNotBlank() }
-        val expectedTelegramUsername = link.expectedTelegramUsername
-            ?.let(::normalizeTelegramUsername)
-            ?.takeIf { it.isNotBlank() }
-
-        // Durante el registro se exige que el chat abierto pertenezca exactamente al
-        // @usuario de Telegram escrito en el formulario. Para cuentas ya verificadas,
-        // Ajustes permite actualizar el Telegram vinculado sin quedar atado al anterior.
-        if (!alreadyVerified && expectedTelegramUsername != null && actualTelegramUsername != expectedTelegramUsername) {
-            val expectedLabel = "@$expectedTelegramUsername"
-            throw AppException(
-                if (actualTelegramUsername == null) {
-                    "La cuenta de Telegram abierta no tiene un nombre de usuario. Configura $expectedLabel en Telegram y abre nuevamente el enlace desde Credicash."
-                } else {
-                    "Este registro fue creado para $expectedLabel, pero abriste @$actualTelegramUsername. Cambia a la cuenta correcta de Telegram y vuelve a intentarlo."
-                }
-            )
-        }
-
-        val conflictingUser = connection.prepareStatement(
-            """
-            SELECT user_id
-            FROM vinculaciones_telegram
-            WHERE active=TRUE
-              AND (telegram_chat_id=? OR telegram_user_id=?)
-              AND user_id<>?
-            LIMIT 1
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, chatId)
-            statement.setLong(2, telegramUserId)
-            statement.setLong(3, userId)
-            statement.executeQuery().use { result -> if (result.next()) result.getLong(1) else null }
-        }
-        if (conflictingUser != null) {
-            throw AppException("Este Telegram ya está vinculado a otra cuenta de Credicash.")
-        }
-
-        connection.prepareStatement(
-            """
-            INSERT INTO vinculaciones_telegram(
-                user_id,telegram_chat_id,telegram_user_id,telegram_username,
-                telegram_first_name,telegram_last_name,language_code,active,linked_at,updated_at
-            ) VALUES (?,?,?,?,?,?,?,TRUE,NOW(),NOW())
-            ON CONFLICT(user_id) DO UPDATE SET
-                telegram_chat_id=EXCLUDED.telegram_chat_id,
-                telegram_user_id=EXCLUDED.telegram_user_id,
-                telegram_username=EXCLUDED.telegram_username,
-                telegram_first_name=EXCLUDED.telegram_first_name,
-                telegram_last_name=EXCLUDED.telegram_last_name,
-                language_code=EXCLUDED.language_code,
-                active=TRUE,
-                updated_at=NOW()
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setLong(2, chatId)
-            statement.setLong(3, telegramUserId)
-            statement.setString(4, username?.trim()?.takeIf { it.isNotBlank() })
-            statement.setString(5, firstName?.trim()?.takeIf { it.isNotBlank() })
-            statement.setString(6, lastName?.trim()?.takeIf { it.isNotBlank() })
-            statement.setString(7, languageCode?.trim()?.take(20)?.takeIf { it.isNotBlank() })
-            statement.executeUpdate()
-        }
-        actualTelegramUsername?.let { linkedUsername ->
-            connection.prepareStatement(
-                "UPDATE usuarios SET telegram_username_registro=?,updated_at=NOW() WHERE id=?"
-            ).use { statement ->
-                statement.setString(1, linkedUsername)
-                statement.setLong(2, userId)
-                statement.executeUpdate()
-            }
-        }
-        connection.prepareStatement(
-            "UPDATE enlaces_vinculacion_telegram SET used_at=NOW() WHERE id=?"
-        ).use { statement ->
-            statement.setLong(1, linkId)
-            statement.executeUpdate()
-        }
-        connection.prepareStatement(
-            "UPDATE enlaces_vinculacion_telegram SET used_at=NOW() WHERE user_id=? AND used_at IS NULL"
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.executeUpdate()
-        }
-        audit(connection, userId, "TELEGRAM_LINKED", "USER", userId.toString(), "Chat privado de Telegram vinculado")
-
-        val delivery = if (alreadyVerified) null else TelegramCodeDelivery(
-            userId = userId,
-            chatId = chatId,
-            code = issueSecurityCode(connection, userId, chatId.toString(), "ACCOUNT_VERIFICATION"),
-            firstName = profileFirstName ?: firstName
-        )
-        TelegramLinkResult(userId, profileFirstName ?: firstName, alreadyVerified, delivery)
-    }
-
-    private fun issueTelegramCodeFromLinkedChat(chatId: Long): TelegramCodeDelivery? = database.transaction { connection ->
-        val row = connection.prepareStatement(
-            """
-            SELECT u.id,u.email_verified,p.first_name
-            FROM vinculaciones_telegram vt
-            JOIN usuarios u ON u.id=vt.user_id
-            LEFT JOIN perfiles_usuario p ON p.user_id=u.id
-            WHERE vt.telegram_chat_id=? AND vt.active=TRUE
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, chatId)
-            statement.executeQuery().use { result ->
-                if (!result.next()) throw AppException("Este chat todavía no está vinculado. Abre el enlace generado por la aplicación Credicash.")
-                Triple(result.getLong(1), result.getBoolean(2), result.getString(3))
-            }
-        }
-        if (row.second) return@transaction null
-        enforceSecurityCodeCooldown(connection, row.first, "ACCOUNT_VERIFICATION")
-        TelegramCodeDelivery(
-            userId = row.first,
-            chatId = chatId,
-            code = issueSecurityCode(connection, row.first, chatId.toString(), "ACCOUNT_VERIFICATION"),
-            firstName = row.third
-        )
-    }
 
     fun verifyPin(request: VerifyPinRequest, accessTokenFactory: (Long, String, UUID) -> String): VerifyPinResponse {
         var pinFailure: String? = null
@@ -10423,172 +9814,6 @@ class AppService(
         }
     }
 
-    private fun telegramBinding(connection: Connection, userId: Long): TelegramBinding? =
-        connection.prepareStatement(
-            """
-            SELECT telegram_chat_id,telegram_user_id,telegram_first_name
-            FROM vinculaciones_telegram
-            WHERE user_id=? AND active=TRUE
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.executeQuery().use { result ->
-                if (!result.next()) null else TelegramBinding(
-                    chatId = result.getLong("telegram_chat_id"),
-                    telegramUserId = result.getLong("telegram_user_id"),
-                    firstName = result.getString("telegram_first_name")
-                )
-            }
-        }
-
-    private fun issueTelegramLink(connection: Connection, userId: Long, purpose: String): String {
-        require(purpose in setOf("ACCOUNT_VERIFICATION", "PASSWORD_RESET")) {
-            "Propósito de vinculación de Telegram no admitido."
-        }
-        connection.prepareStatement(
-            "UPDATE enlaces_vinculacion_telegram SET used_at=NOW() WHERE user_id=? AND purpose=? AND used_at IS NULL"
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setString(2, purpose)
-            statement.executeUpdate()
-        }
-        val bytes = ByteArray(32)
-        secureRandom.nextBytes(bytes)
-        val token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-        connection.prepareStatement(
-            """
-            INSERT INTO enlaces_vinculacion_telegram(user_id,purpose,token_hash,expires_at)
-            VALUES (?,?,?,NOW() + INTERVAL '10 minutes')
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setString(2, purpose)
-            statement.setString(3, sha256(token))
-            statement.executeUpdate()
-        }
-        return token
-    }
-
-    private fun issueSecurityCode(connection: Connection, userId: Long, destination: String, purpose: String): String {
-        val issuedLastHour = connection.prepareStatement(
-            "SELECT COUNT(*) FROM codigos_verificacion WHERE user_id=? AND purpose=? AND created_at>NOW() - INTERVAL '1 hour'"
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setString(2, purpose)
-            statement.executeQuery().use { result -> result.next(); result.getInt(1) }
-        }
-        if (issuedLastHour >= 5) {
-            throw AppException("Alcanzaste el límite de 5 códigos por hora. Inténtalo nuevamente más tarde.")
-        }
-        connection.prepareStatement(
-            "UPDATE codigos_verificacion SET consumed_at=NOW() WHERE user_id=? AND purpose=? AND consumed_at IS NULL"
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setString(2, purpose)
-            statement.executeUpdate()
-        }
-        val code = (secureRandom.nextInt(900_000) + 100_000).toString()
-        connection.prepareStatement(
-            """
-            INSERT INTO codigos_verificacion(
-                user_id,channel,purpose,destination,code_hash,attempts,expires_at
-            )
-            VALUES (?,'TELEGRAM',?,?,?,0,NOW() + INTERVAL '10 minutes')
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setString(2, purpose)
-            statement.setString(3, destination)
-            statement.setString(4, passwordSecurity.hash(code))
-            statement.executeUpdate()
-        }
-        return code
-    }
-
-    private fun consumeSecurityCode(
-        userId: Long,
-        destination: String,
-        purpose: String,
-        code: String
-    ) {
-        // La validación se confirma en su propia transacción. Así los intentos fallidos
-        // quedan registrados aunque el flujo principal responda con un error.
-        val validationError = database.transaction { connection ->
-            val record = connection.prepareStatement(
-                """
-                SELECT id,code_hash,attempts
-                FROM codigos_verificacion
-                WHERE user_id=?
-                  AND purpose=?
-                  AND destination=?
-                  AND consumed_at IS NULL
-                  AND expires_at>NOW()
-                ORDER BY created_at DESC
-                LIMIT 1
-                FOR UPDATE
-                """.trimIndent()
-            ).use { statement ->
-                statement.setLong(1, userId)
-                statement.setString(2, purpose)
-                statement.setString(3, destination)
-                statement.executeQuery().use { result ->
-                    if (!result.next()) null else SecurityCodeRow(
-                        id = result.getLong("id"),
-                        hash = result.getString("code_hash"),
-                        attempts = result.getInt("attempts")
-                    )
-                }
-            } ?: return@transaction "El código no es válido o ya venció."
-
-            if (record.attempts >= 5) {
-                return@transaction "Superaste el número de intentos permitidos. Solicita un código nuevo."
-            }
-            if (!passwordSecurity.verify(record.hash, code)) {
-                val nextAttempts = record.attempts + 1
-                connection.prepareStatement(
-                    "UPDATE codigos_verificacion SET attempts=?, consumed_at=CASE WHEN ?>=5 THEN NOW() ELSE consumed_at END WHERE id=?"
-                ).use { statement ->
-                    statement.setInt(1, nextAttempts)
-                    statement.setInt(2, nextAttempts)
-                    statement.setLong(3, record.id)
-                    statement.executeUpdate()
-                }
-                return@transaction if (nextAttempts >= 5) {
-                    "Superaste el número de intentos permitidos. Solicita un código nuevo."
-                } else {
-                    "El código no es válido o ya venció."
-                }
-            }
-            connection.prepareStatement(
-                "UPDATE codigos_verificacion SET consumed_at=NOW() WHERE id=?"
-            ).use { statement ->
-                statement.setLong(1, record.id)
-                statement.executeUpdate()
-            }
-            null
-        }
-        if (validationError != null) throw AppException(validationError)
-    }
-
-    private fun enforceSecurityCodeCooldown(connection: Connection, userId: Long, purpose: String) {
-        val seconds = connection.prepareStatement(
-            """
-            SELECT EXTRACT(EPOCH FROM (NOW()-created_at))::integer
-            FROM codigos_verificacion
-            WHERE user_id=? AND purpose=?
-            ORDER BY created_at DESC
-            LIMIT 1
-            """.trimIndent()
-        ).use { statement ->
-            statement.setLong(1, userId)
-            statement.setString(2, purpose)
-            statement.executeQuery().use { result -> if (result.next()) result.getInt(1) else null }
-        }
-        if (seconds != null && seconds < 60) {
-            throw AppException("Espera ${60 - seconds} segundos antes de solicitar otro código.")
-        }
-    }
-
     private fun createChallenge(connection: Connection, userId: Long, purpose: String, minutes: Long): UUID {
         return connection.prepareStatement("INSERT INTO desafios_autenticacion(user_id,purpose,expires_at) VALUES (?,?,NOW() + (? * INTERVAL '1 minute')) RETURNING token").use { statement ->
             statement.setLong(1, userId); statement.setString(2, purpose); statement.setLong(3, minutes)
@@ -10840,7 +10065,6 @@ class AppService(
     )
 
     private data class SessionRefreshRow(val userId: Long, val role: String, val accountStatus: String, val verificationStatus: String)
-private data class SecurityCodeRow(val id: Long, val hash: String, val attempts: Int)
 private data class LoginRow(
     val id: Long,
     val email: String,
@@ -11649,11 +10873,6 @@ private data class LoginRow(
         }
     }
 
-    private fun normalizeTelegramUsername(value: String?): String = value.orEmpty()
-        .trim()
-        .removePrefix("@")
-        .lowercase()
-
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -11710,7 +10929,6 @@ private data class LoginRow(
 
     companion object {
         private val USERNAME_REGEX = Regex("^[A-Za-z][A-Za-z0-9_.]{3,23}$")
-        private val TELEGRAM_USERNAME_REGEX = Regex("^[a-z0-9_]{5,32}$")
         private val EMAIL_REGEX = Regex("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", RegexOption.IGNORE_CASE)
     }
 }

@@ -56,15 +56,6 @@ data class AppConfig(
     val accountantInitialBudgetUsd: Double = bootstrapEnv("ACCOUNTANT_INITIAL_BUDGET_USD", "1000000").toDoubleOrNull()?.coerceAtLeast(0.0) ?: 1_000_000.0,
     val firebaseServiceAccountJson: String? = optionalEnv("FIREBASE_SERVICE_ACCOUNT_JSON"),
     val firebaseServiceAccountBase64: String? = optionalEnv("FIREBASE_SERVICE_ACCOUNT_BASE64"),
-    // C35: tolera nombres alternativos y elimina comillas pegadas al copiar secretos en el proveedor cloud.
-    // El correo se conserva como dato de la cuenta, pero los códigos de seguridad se
-    // entregan exclusivamente mediante el bot oficial de Telegram de Credicash.
-    val telegramBotToken: String = firstEnvironmentValue("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN").orEmpty(),
-    val telegramBotUsername: String = firstEnvironmentValue("TELEGRAM_BOT_USERNAME", "TELEGRAM_USERNAME")
-        .orEmpty().removePrefix("@"),
-    val telegramWebhookSecret: String = firstEnvironmentValue("TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_SECRET_TOKEN").orEmpty(),
-    val telegramWebhookUrl: String = firstEnvironmentValue("TELEGRAM_WEBHOOK_URL").orEmpty(),
-    val passwordRecoveryEnabled: Boolean = env("PASSWORD_RECOVERY_ENABLED", "true").equals("true", ignoreCase = true),
     val recaptchaProjectId: String = env("RECAPTCHA_PROJECT_ID", ""),
     val recaptchaApiKey: String = env("RECAPTCHA_API_KEY", ""),
     val recaptchaSiteKey: String = env("RECAPTCHA_SITE_KEY", ""),

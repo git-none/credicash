@@ -12,7 +12,6 @@ data class HealthResponse(
     val status: String,
     val database: String,
     val version: String,
-    val telegram: String = "unknown",
     val push: String = "unknown",
     val recaptcha: String = "unknown",
     val bcv: String = "unknown",
@@ -27,7 +26,6 @@ data class RegisterRequest(
     val lastName: String,
     val secondLastName: String,
     val email: String,
-    val telegramUsername: String = "",
     val phone: String,
     val birthDate: String,
     val employmentType: String,
@@ -49,10 +47,7 @@ data class RegisterResponse(
     val userId: Long,
     val verificationStatus: String,
     val registrationToken: String? = null,
-    val accountVerified: Boolean = false,
-    val telegramVerificationRequired: Boolean = false,
-    val telegramLinked: Boolean = false,
-    val telegramLinkUrl: String? = null
+    val accountVerified: Boolean = false
 )
 
 data class BiometricCredentialRequest(
@@ -93,82 +88,7 @@ data class LoginResponse(
     val suspendedAt: String? = null,
     val pinChallengeToken: String? = null,
     val registrationToken: String? = null,
-    val accountVerified: Boolean = true,
-    val telegramVerificationRequired: Boolean = false,
-    val telegramLinked: Boolean = false,
-    val telegramLinkUrl: String? = null
-)
-
-data class TelegramVerificationRequest(
-    val userId: Long,
-    val email: String,
-    val code: String? = null,
-    val verificationCode: String? = null,
-    val recaptchaToken: String? = null,
-    val captchaToken: String? = null
-)
-
-data class TelegramResendRequest(
-    val userId: Long,
-    val email: String,
-    val recaptchaToken: String? = null,
-    val captchaToken: String? = null
-)
-
-data class PasswordResetRequest(
-    val email: String? = null,
-    val identifier: String? = null,
-    val recaptchaToken: String? = null,
-    val captchaToken: String? = null
-)
-
-data class PasswordResetConfirmRequest(
-    val email: String? = null,
-    val identifier: String? = null,
-    val code: String? = null,
-    val verificationCode: String? = null,
-    val newPassword: String? = null,
-    val password: String? = null,
-    val recaptchaToken: String? = null,
-    val captchaToken: String? = null
-)
-
-data class SecurityActionResponse(
-    val message: String,
-    val registrationToken: String? = null,
-    val userId: Long? = null,
-    val accountVerified: Boolean? = null,
-    val telegramLinked: Boolean? = null,
-    val telegramLinkUrl: String? = null
-)
-
-data class TelegramUpdate(
-    val update_id: Long? = null,
-    val message: TelegramMessage? = null
-)
-
-data class TelegramMessage(
-    val message_id: Long? = null,
-    val from: TelegramUser? = null,
-    val chat: TelegramChat,
-    val text: String? = null
-)
-
-data class TelegramUser(
-    val id: Long,
-    val is_bot: Boolean = false,
-    val first_name: String? = null,
-    val last_name: String? = null,
-    val username: String? = null,
-    val language_code: String? = null
-)
-
-data class TelegramChat(
-    val id: Long,
-    val type: String,
-    val username: String? = null,
-    val first_name: String? = null,
-    val last_name: String? = null
+    val accountVerified: Boolean = true
 )
 
 data class VerifyPinRequest(

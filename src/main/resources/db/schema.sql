@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS usuarios (
     id BIGSERIAL PRIMARY KEY,
     public_id UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
     email VARCHAR(255) NOT NULL,
-    telegram_username_registro VARCHAR(32),
     password_hash TEXT NOT NULL,
     pin_hash TEXT NOT NULL,
     role VARCHAR(30) NOT NULL DEFAULT 'BENEFICIARY' CHECK (role IN ('BENEFICIARY','ADMIN','ACCOUNTANT','WAREHOUSE')),
@@ -160,7 +159,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_challenges_user ON desafios_autenticacion(us
 CREATE TABLE IF NOT EXISTS codigos_verificacion (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT REFERENCES usuarios(id) ON DELETE CASCADE,
-    channel VARCHAR(20) NOT NULL CHECK (channel IN ('EMAIL','SMS','TELEGRAM')),
+    channel VARCHAR(20) NOT NULL CHECK (channel IN ('EMAIL','SMS')),
     purpose VARCHAR(40) NOT NULL CHECK (purpose IN ('EMAIL_VERIFICATION','ACCOUNT_VERIFICATION','PASSWORD_RESET','PHONE_VERIFICATION','LOGIN','CRITICAL_ACTION')),
     destination VARCHAR(255) NOT NULL,
     code_hash TEXT NOT NULL,
@@ -1660,67 +1659,6 @@ INSERT INTO versiones_esquema(version, description)
 VALUES (56, 'Credicash 5.0.18: sincronización en tiempo real del visor mediante PostgreSQL LISTEN/NOTIFY y SSE')
 ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
 
--- Credicash 5.0.24: códigos de seguridad mediante el bot oficial de Telegram.
-
-ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS telegram_username_registro VARCHAR(32);
-
-ALTER TABLE codigos_verificacion DROP CONSTRAINT IF EXISTS verification_codes_purpose_check;
-ALTER TABLE codigos_verificacion DROP CONSTRAINT IF EXISTS codigos_verificacion_purpose_check;
-ALTER TABLE codigos_verificacion
-    ADD CONSTRAINT codigos_verificacion_purpose_check
-    CHECK (purpose IN ('EMAIL_VERIFICATION','ACCOUNT_VERIFICATION','PASSWORD_RESET','PHONE_VERIFICATION','LOGIN','CRITICAL_ACTION'));
-
-ALTER TABLE codigos_verificacion DROP CONSTRAINT IF EXISTS verification_codes_channel_check;
-ALTER TABLE codigos_verificacion DROP CONSTRAINT IF EXISTS codigos_verificacion_channel_check;
-ALTER TABLE codigos_verificacion
-    ADD CONSTRAINT codigos_verificacion_channel_check
-    CHECK (channel IN ('EMAIL','SMS','TELEGRAM'));
-
-CREATE TABLE IF NOT EXISTS vinculaciones_telegram (
-    user_id BIGINT PRIMARY KEY REFERENCES usuarios(id) ON DELETE CASCADE,
-    telegram_chat_id BIGINT NOT NULL UNIQUE,
-    telegram_user_id BIGINT NOT NULL UNIQUE,
-    telegram_username VARCHAR(64),
-    telegram_first_name VARCHAR(255),
-    telegram_last_name VARCHAR(255),
-    language_code VARCHAR(20),
-    active BOOLEAN NOT NULL DEFAULT TRUE,
-    linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_vinculaciones_telegram_chat
-    ON vinculaciones_telegram(telegram_chat_id, active);
-
-CREATE TABLE IF NOT EXISTS enlaces_vinculacion_telegram (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-    purpose VARCHAR(40) NOT NULL CHECK (purpose IN ('ACCOUNT_VERIFICATION','PASSWORD_RESET')),
-    token_hash VARCHAR(64) NOT NULL UNIQUE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    used_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_enlaces_vinculacion_telegram_usuario
-    ON enlaces_vinculacion_telegram(user_id, purpose, expires_at DESC);
-
-COMMENT ON TABLE vinculaciones_telegram IS 'Vinculación privada entre una cuenta Credicash y un chat individual de Telegram.';
-COMMENT ON TABLE enlaces_vinculacion_telegram IS 'Enlaces de un solo uso para vincular de forma segura el bot oficial de Credicash.';
-
-INSERT INTO versiones_esquema(version, description)
-VALUES (57, 'Credicash 5.0.24: códigos por bot de Telegram, @usuario obligatorio en registro, vinculación segura y webhook protegido')
-ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
-
--- Credicash 5.0.25: Telegram es el único canal activo para códigos de seguridad.
--- Se conservan columnas y valores históricos para compatibilidad, pero se invalidan
--- los códigos antiguos pendientes que hubieran sido creados para correo.
-UPDATE codigos_verificacion
-SET consumed_at = COALESCE(consumed_at, NOW())
-WHERE channel='EMAIL' AND consumed_at IS NULL;
-
-INSERT INTO versiones_esquema(version, description)
-VALUES (58, 'Credicash 5.0.25: Telegram como único canal activo de códigos y eliminación de confirmación ambigua de vinculación')
-ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
-
 -- Migración 59 / Credicash 5.0.33: precios maestros en USD, cálculo BCV exacto y sesión única activa.
 ALTER TABLE productos ADD COLUMN IF NOT EXISTS base_price_usd NUMERIC(18,6) NOT NULL DEFAULT 0;
 ALTER TABLE productos ADD COLUMN IF NOT EXISTS bcv_rate NUMERIC(18,6) NOT NULL DEFAULT 0;
@@ -2601,8 +2539,8 @@ INSERT INTO versiones_esquema(version, description)
 VALUES (80, 'Correcciones 5.4: accesos operativos retirados separados de suspensión y eliminación segura preservando historial')
 ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
 
--- Migración 81 / Credicash 7.2.5: carga masiva de Beneficiarios, aprobación exclusiva del Contador,
--- Telegram fuera del flujo activo y carátulas públicas para Jornadas/Combos.
+-- Migración 81 / Credicash 7.2.5: carga masiva de Beneficiarios, aprobación exclusiva del Contador
+-- y carátulas públicas para Jornadas/Combos.
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS created_by BIGINT REFERENCES usuarios(id) ON DELETE SET NULL;
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS registration_source VARCHAR(40) NOT NULL DEFAULT 'SELF_REGISTRATION';
 CREATE INDEX IF NOT EXISTS idx_usuarios_created_by ON usuarios(created_by, created_at DESC);
@@ -2611,13 +2549,12 @@ CREATE INDEX IF NOT EXISTS idx_usuarios_registration_source ON usuarios(registra
 ALTER TABLE jornadas ADD COLUMN IF NOT EXISTS cover_path TEXT;
 ALTER TABLE combos ADD COLUMN IF NOT EXISTS cover_path TEXT;
 
--- Telegram se conserva para una futura reactivación, pero deja de ser requisito de acceso.
 UPDATE usuarios
 SET email_verified=TRUE, updated_at=NOW()
 WHERE role='BENEFICIARY' AND email_verified=FALSE;
 
 INSERT INTO versiones_esquema(version, description)
-VALUES (81, 'Credicash 7.2.5: Beneficiarios por Excel con trazabilidad, aprobación del Contador, Telegram opcional y carátulas de Jornadas/Combos')
+VALUES (81, 'Credicash 7.2.5: Beneficiarios por Excel con trazabilidad, aprobación del Contador y carátulas de Jornadas/Combos')
 ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
 
 
