@@ -21,7 +21,11 @@ data class BudgetMathInput(
     val loansOutstandingUsd: BigDecimal,
     val overdueLoansUsd: BigDecimal,
     val reservedUsd: BigDecimal,
-    val expectedCollections30DaysUsd: BigDecimal
+    val expectedCollections30DaysUsd: BigDecimal,
+    val inventoryCostsUsd: BigDecimal = BigDecimal.ZERO,
+    val commercialExpensesUsd: BigDecimal = BigDecimal.ZERO,
+    val financialExpensesUsd: BigDecimal = BigDecimal.ZERO,
+    val extraordinaryExpensesUsd: BigDecimal = BigDecimal.ZERO
 )
 
 data class BudgetMathResult(
@@ -47,6 +51,10 @@ object BudgetMath {
         val administrators = money(input.administratorsAvailableUsd)
         val operatingExpenses = money(input.operatingExpensesUsd)
         val administrativeExpenses = money(input.administrativeExpensesUsd)
+        val inventoryCosts = money(input.inventoryCostsUsd)
+        val commercialExpenses = money(input.commercialExpensesUsd)
+        val financialExpenses = money(input.financialExpensesUsd)
+        val extraordinaryExpenses = money(input.extraordinaryExpensesUsd)
         val loansDisbursed = money(input.loansDisbursedUsd)
         val loansRecovered = money(input.loansRecoveredUsd)
         val loansOutstanding = money(input.loansOutstandingUsd)
@@ -58,6 +66,10 @@ object BudgetMath {
         // administradores son inversión interna y no se suman otra vez para evitar doble conteo.
         val totalExpenses = operatingExpenses
             .add(administrativeExpenses, MoneyMath.CONTEXT)
+            .add(inventoryCosts, MoneyMath.CONTEXT)
+            .add(commercialExpenses, MoneyMath.CONTEXT)
+            .add(financialExpenses, MoneyMath.CONTEXT)
+            .add(extraordinaryExpenses, MoneyMath.CONTEXT)
             .add(loansDisbursed, MoneyMath.CONTEXT)
             .normalizedMoney()
         val totalCommitted = loansOutstanding.add(reserved, MoneyMath.CONTEXT).normalizedMoney()
@@ -71,6 +83,10 @@ object BudgetMath {
         val expectedCash = bankBudget
             .subtract(operatingExpenses, MoneyMath.CONTEXT)
             .subtract(administrativeExpenses, MoneyMath.CONTEXT)
+            .subtract(inventoryCosts, MoneyMath.CONTEXT)
+            .subtract(commercialExpenses, MoneyMath.CONTEXT)
+            .subtract(financialExpenses, MoneyMath.CONTEXT)
+            .subtract(extraordinaryExpenses, MoneyMath.CONTEXT)
             .subtract(loansDisbursed, MoneyMath.CONTEXT)
             .add(loansRecovered, MoneyMath.CONTEXT)
             .normalizedMoney()

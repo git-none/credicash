@@ -219,6 +219,12 @@ class Database(private val config: AppConfig) {
             "consentimientos_usuario",
             "transacciones_carteras_continuas",
             "movimientos_presupuestarios",
+            "catalogo_costos",
+            "centros_costo",
+            "periodos_presupuestarios",
+            "partidas_presupuestarias",
+            "compromisos_presupuestarios",
+            "ajustes_presupuestarios",
             "evaluaciones_predictivas",
             "corridas_predictivas_presupuesto",
             "reportes_pago_usuario",
@@ -253,6 +259,16 @@ class Database(private val config: AppConfig) {
             }
 
             connection.prepareStatement(
+                "SELECT EXISTS(SELECT 1 FROM versiones_esquema WHERE version = 83)"
+            ).use { statement ->
+                statement.executeQuery().use { result ->
+                    check(result.next() && result.getBoolean(1)) {
+                        "La migración 83 del control presupuestario no está registrada en versiones_esquema."
+                    }
+                }
+            }
+
+            connection.prepareStatement(
                 """
                 SELECT COUNT(*)
                 FROM prestamos_credito
@@ -271,7 +287,11 @@ class Database(private val config: AppConfig) {
                 "productos" to listOf("base_price_usd", "bcv_rate", "pricing_mode", "price_updated_at", "minimum_stock", "last_counted_at", "technical_details"),
                 "desafios_autenticacion" to listOf("attempts"),
                 "sesiones_usuario" to listOf("device_id_hash", "last_heartbeat_at", "ended_reason"),
-                "movimientos_presupuestarios" to listOf("tipo", "monto_usd", "tasa_bcv", "saldo_antes_usd", "saldo_despues_usd", "idempotency_key"),
+                "movimientos_presupuestarios" to listOf(
+                    "tipo", "monto_usd", "tasa_bcv", "saldo_antes_usd", "saldo_despues_usd", "idempotency_key",
+                    "categoria_costo_id", "centro_costo_id", "periodo_presupuestario_id",
+                    "partida_presupuestaria_id", "compromiso_id", "estado_control_presupuesto"
+                ),
                 "facturas" to listOf("integrity_status", "integrity_score", "calculated_total_bs", "integrity_difference_bs", "document_hash", "algorithm_version", "validation_warnings", "integrity_verified_at"),
                 "usuarios" to listOf("admin_subrole"),
                 "reportes_pago_usuario" to listOf("risk_score", "risk_level", "proof_sha256", "proof_visual_hash", "bank_confirmed", "amount_difference_bs", "amount_difference_percent", "decision_version"),

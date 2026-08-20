@@ -55,4 +55,33 @@ class BudgetMathTest {
 
         assertEquals(BigDecimal("0.00"), result.projectedAvailable30DaysUsd)
     }
+
+    @Test
+    fun `incluye todos los grupos de costo sin perder precision`() {
+        val result = BudgetMath.calculate(
+            BudgetMathInput(
+                bankBudgetUsd = BigDecimal("2000.00"),
+                centralAvailableUsd = BigDecimal("1400.00"),
+                administratorsAvailableUsd = BigDecimal.ZERO,
+                investedUsd = BigDecimal.ZERO,
+                operatingExpensesUsd = BigDecimal("100.00"),
+                administrativeExpensesUsd = BigDecimal("80.00"),
+                loansDisbursedUsd = BigDecimal.ZERO,
+                loansRecoveredUsd = BigDecimal.ZERO,
+                loansOutstandingUsd = BigDecimal.ZERO,
+                overdueLoansUsd = BigDecimal.ZERO,
+                reservedUsd = BigDecimal.ZERO,
+                expectedCollections30DaysUsd = BigDecimal.ZERO,
+                inventoryCostsUsd = BigDecimal("200.00"),
+                commercialExpensesUsd = BigDecimal("90.00"),
+                financialExpensesUsd = BigDecimal("70.00"),
+                extraordinaryExpensesUsd = BigDecimal("60.00")
+            )
+        )
+
+        assertEquals(BigDecimal("600.00"), result.totalExpensesUsd)
+        assertEquals(BigDecimal("1400.00"), result.expectedCashUsd)
+        assertEquals(BigDecimal("30.00"), result.executionPercent)
+        assertEquals(BigDecimal("0.00"), result.integrityDifferenceUsd)
+    }
 }

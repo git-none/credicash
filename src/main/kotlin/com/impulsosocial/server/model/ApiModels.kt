@@ -1097,6 +1097,22 @@ data class BudgetMovementDto(
     val description: String? = null,
     val expenseCategory: String? = null,
     val expenseCategoryLabel: String? = null,
+    val costCategoryCode: String? = null,
+    val costCategoryLabel: String? = null,
+    val costGroup: String? = null,
+    val costCenterId: Long? = null,
+    val costCenterName: String? = null,
+    val budgetPeriodId: Long? = null,
+    val budgetLineId: Long? = null,
+    val commitmentId: Long? = null,
+    val supplier: String? = null,
+    val invoiceNumber: String? = null,
+    val transactionDate: String? = null,
+    val paymentMethod: String? = null,
+    val costBehavior: String? = null,
+    val recurrence: String? = null,
+    val projectReference: String? = null,
+    val receiptPath: String? = null,
     val createdAt: String
 )
 
@@ -1104,7 +1120,8 @@ data class ExpenseCategorySummaryDto(
     val category: String,
     val label: String,
     val amountUsd: Double,
-    val amountBs: Double
+    val amountBs: Double,
+    val group: String? = null
 )
 
 data class AdvancedBudgetDto(
@@ -1122,8 +1139,17 @@ data class AdvancedBudgetDto(
     val operatingExpensesBs: Double = 0.0,
     val administrativeExpensesUsd: Double = 0.0,
     val administrativeExpensesBs: Double = 0.0,
+    val inventoryCostsUsd: Double = 0.0,
+    val inventoryCostsBs: Double = 0.0,
+    val commercialExpensesUsd: Double = 0.0,
+    val commercialExpensesBs: Double = 0.0,
+    val financialExpensesUsd: Double = 0.0,
+    val financialExpensesBs: Double = 0.0,
+    val extraordinaryExpensesUsd: Double = 0.0,
+    val extraordinaryExpensesBs: Double = 0.0,
     val operatingExpenseBreakdown: List<ExpenseCategorySummaryDto> = emptyList(),
     val administrativeExpenseBreakdown: List<ExpenseCategorySummaryDto> = emptyList(),
+    val detailedCostBreakdown: List<ExpenseCategorySummaryDto> = emptyList(),
     val totalExpensesUsd: Double = 0.0,
     val totalExpensesBs: Double = 0.0,
     val loansDisbursedUsd: Double = 0.0,
@@ -1160,7 +1186,165 @@ data class BudgetMovementRequest(
     val amountUsd: Double,
     val description: String = "Movimiento presupuestario",
     val expenseCategory: String? = null,
+    val idempotencyKey: String? = null,
+    val costCategoryCode: String? = null,
+    val costCenterId: Long? = null,
+    val budgetPeriodId: Long? = null,
+    val budgetLineId: Long? = null,
+    val commitmentId: Long? = null,
+    val responsibleUserId: Long? = null,
+    val supplier: String? = null,
+    val invoiceNumber: String? = null,
+    val transactionDate: String? = null,
+    val paymentMethod: String? = null,
+    val costBehavior: String? = null,
+    val recurrence: String? = null,
+    val projectReference: String? = null,
+    val receiptPath: String? = null,
+    val originalCurrency: String = "USD",
+    val originalAmount: Double? = null
+)
+
+data class CostCategoryDto(
+    val id: Long,
+    val code: String,
+    val name: String,
+    val group: String,
+    val level: Int,
+    val movementAllowed: Boolean,
+    val receiptRequired: Boolean,
+    val approvalRequired: Boolean,
+    val children: List<CostCategoryDto> = emptyList()
+)
+
+data class CostCenterDto(
+    val id: Long,
+    val code: String,
+    val name: String,
+    val type: String,
+    val parentId: Long? = null,
+    val responsibleUserId: Long? = null,
+    val active: Boolean = true,
+    val createdAt: String = ""
+)
+
+data class CostCenterRequest(
+    val code: String,
+    val name: String,
+    val type: String,
+    val parentId: Long? = null,
+    val responsibleUserId: Long? = null
+)
+
+data class BudgetPeriodDto(
+    val id: Long,
+    val code: String,
+    val name: String,
+    val startDate: String,
+    val endDate: String,
+    val status: String,
+    val currency: String,
+    val createdAt: String = ""
+)
+
+data class BudgetPeriodRequest(
+    val code: String,
+    val name: String,
+    val startDate: String,
+    val endDate: String,
+    val currency: String = "USD"
+)
+
+data class BudgetPeriodStatusRequest(
+    val status: String
+)
+
+data class BudgetLineDto(
+    val id: Long,
+    val periodId: Long,
+    val categoryId: Long,
+    val categoryCode: String,
+    val categoryName: String,
+    val costGroup: String,
+    val costCenterId: Long,
+    val costCenterName: String,
+    val approvedUsd: Double,
+    val modifiedUsd: Double,
+    val currentUsd: Double,
+    val committedUsd: Double,
+    val executedUsd: Double,
+    val availableUsd: Double,
+    val executionPercent: Double,
+    val status: String
+)
+
+data class BudgetLineRequest(
+    val periodId: Long,
+    val categoryId: Long,
+    val costCenterId: Long,
+    val approvedUsd: Double,
+    val notes: String? = null
+)
+
+data class BudgetCommitmentDto(
+    val id: Long,
+    val reference: String,
+    val budgetLineId: Long,
+    val amountUsd: Double,
+    val description: String,
+    val supplier: String? = null,
+    val invoiceNumber: String? = null,
+    val expectedPaymentDate: String? = null,
+    val status: String,
+    val expenseMovementId: Long? = null,
+    val createdAt: String
+)
+
+data class BudgetCommitmentRequest(
+    val budgetLineId: Long,
+    val amountUsd: Double,
+    val description: String,
+    val supplier: String? = null,
+    val invoiceNumber: String? = null,
+    val expectedPaymentDate: String? = null,
     val idempotencyKey: String? = null
+)
+
+data class BudgetCommitmentStatusRequest(
+    val status: String,
+    val reason: String? = null
+)
+
+data class BudgetAdjustmentRequest(
+    val type: String,
+    val sourceLineId: Long? = null,
+    val destinationLineId: Long? = null,
+    val amountUsd: Double,
+    val reason: String,
+    val idempotencyKey: String? = null
+)
+
+data class BudgetAlertDto(
+    val code: String,
+    val level: String,
+    val message: String,
+    val budgetLineId: Long? = null,
+    val currentPercent: Double? = null
+)
+
+data class BudgetControlDashboardDto(
+    val period: BudgetPeriodDto,
+    val approvedUsd: Double,
+    val modifiedUsd: Double,
+    val currentUsd: Double,
+    val committedUsd: Double,
+    val executedUsd: Double,
+    val availableUsd: Double,
+    val executionPercent: Double,
+    val lines: List<BudgetLineDto>,
+    val commitments: List<BudgetCommitmentDto>,
+    val alerts: List<BudgetAlertDto>,
+    val calculatedAt: String
 )
 
 data class AccountantWalletDto(

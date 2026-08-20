@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.impulsosocial"
-version = "1.0.0"
+version = "1.1.0"
 
 repositories { mavenCentral() }
 
@@ -38,6 +38,8 @@ dependencies {
     implementation("io.ktor:ktor-server-auth-jwt:3.5.1")
     implementation("io.ktor:ktor-server-status-pages:3.5.1")
     implementation("io.ktor:ktor-server-call-logging:3.5.1")
+    implementation("io.ktor:ktor-server-call-id:3.5.1")
+    implementation("io.ktor:ktor-server-default-headers:3.5.1")
     implementation("io.ktor:ktor-server-cors:3.5.1")
 
     // APIs usadas directamente por el código. Se declaran de forma explícita

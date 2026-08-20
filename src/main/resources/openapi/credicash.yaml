@@ -1,0 +1,272 @@
+openapi: 3.1.0
+info:
+  title: Credicash Backend API
+  version: 1.1.0
+  description: API de Credicash con control presupuestario jerárquico y trazabilidad financiera.
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Estado detallado de la API
+      responses:
+        "200":
+          description: Servicio disponible
+  /accountant/budget/catalog:
+    get:
+      summary: Catálogo jerárquico de costos
+      responses:
+        "200":
+          description: Grupos, categorías y subcategorías activas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CostCategory"
+  /accountant/cost-centers:
+    get:
+      summary: Centros de costo del Contador
+      responses:
+        "200":
+          description: Centros disponibles
+    post:
+      summary: Crear un centro de costo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CostCenterRequest"
+      responses:
+        "201":
+          description: Centro creado
+  /accountant/budget/periods:
+    get:
+      summary: Periodos presupuestarios
+      responses:
+        "200":
+          description: Periodos del Contador
+    post:
+      summary: Crear un periodo en borrador
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetPeriodRequest"
+      responses:
+        "201":
+          description: Periodo creado
+  /accountant/budget/periods/{id}/status:
+    patch:
+      summary: Cambiar el estado de un periodo
+      parameters:
+        - $ref: "#/components/parameters/EntityId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [DRAFT, SUBMITTED, APPROVED, ACTIVE, CLOSED, CANCELLED]
+      responses:
+        "200":
+          description: Periodo actualizado
+  /accountant/budget/lines:
+    post:
+      summary: Crear o actualizar una partida de un periodo en borrador
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetLineRequest"
+      responses:
+        "200":
+          description: Partida guardada
+  /accountant/budget/dashboard:
+    get:
+      summary: Ejecución y alertas del presupuesto
+      parameters:
+        - name: periodId
+          in: query
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Aprobado, vigente, comprometido, ejecutado, disponible y alertas
+  /accountant/budget/commitments:
+    post:
+      summary: Reservar fondos de una partida para un gasto futuro
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetCommitmentRequest"
+      responses:
+        "201":
+          description: Compromiso creado; puede quedar pendiente de doble aprobación
+  /accountant/budget/commitments/{id}/status:
+    patch:
+      summary: Cancelar o actualizar un compromiso permitido
+      parameters:
+        - $ref: "#/components/parameters/EntityId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [COMMITTED, CANCELLED, REVERSED]
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Compromiso actualizado
+  /accountant/budget/adjustments:
+    post:
+      summary: Aumentar, reducir o transferir presupuesto entre partidas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetAdjustmentRequest"
+      responses:
+        "200":
+          description: Presupuesto recalculado
+  /accountant/budget-movements:
+    post:
+      summary: Registrar ingreso, gasto, reserva, liberación o ajuste
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetMovementRequest"
+      responses:
+        "200":
+          description: Movimiento idempotente registrado y cartera actualizada
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    EntityId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+  schemas:
+    CostCategory:
+      type: object
+      required: [id, code, name, group, level, movementAllowed, children]
+      properties:
+        id: { type: integer, format: int64 }
+        code: { type: string, example: OP-DELIVERY }
+        name: { type: string, example: Delivery de última milla }
+        group:
+          type: string
+          enum: [INVENTORY, OPERATING, ADMINISTRATIVE, COMMERCIAL, FINANCIAL, EXTRAORDINARY]
+        level: { type: integer, minimum: 1, maximum: 3 }
+        movementAllowed: { type: boolean }
+        receiptRequired: { type: boolean }
+        approvalRequired: { type: boolean }
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/CostCategory"
+    CostCenterRequest:
+      type: object
+      required: [code, name, type]
+      properties:
+        code: { type: string, example: LOGISTICA }
+        name: { type: string, example: Logística central }
+        type:
+          type: string
+          enum: [CENTRAL, WAREHOUSE, LOGISTICS, MARKETING, TECHNOLOGY, JOURNEY, BRANCH, ADMINISTRATOR, PROJECT, OTHER]
+        parentId: { type: integer, format: int64 }
+        responsibleUserId: { type: integer, format: int64 }
+    BudgetPeriodRequest:
+      type: object
+      required: [code, name, startDate, endDate]
+      properties:
+        code: { type: string, example: "2026-09" }
+        name: { type: string, example: Septiembre 2026 }
+        startDate: { type: string, format: date }
+        endDate: { type: string, format: date }
+        currency: { type: string, enum: [USD, VES], default: USD }
+    BudgetLineRequest:
+      type: object
+      required: [periodId, categoryId, costCenterId, approvedUsd]
+      properties:
+        periodId: { type: integer, format: int64 }
+        categoryId: { type: integer, format: int64 }
+        costCenterId: { type: integer, format: int64 }
+        approvedUsd: { type: number, minimum: 0 }
+        notes: { type: string, maxLength: 500 }
+    BudgetCommitmentRequest:
+      type: object
+      required: [budgetLineId, amountUsd, description]
+      properties:
+        budgetLineId: { type: integer, format: int64 }
+        amountUsd: { type: number, exclusiveMinimum: 0 }
+        description: { type: string }
+        supplier: { type: string }
+        invoiceNumber: { type: string }
+        expectedPaymentDate: { type: string, format: date }
+        idempotencyKey: { type: string }
+    BudgetAdjustmentRequest:
+      type: object
+      required: [type, amountUsd, reason]
+      properties:
+        type: { type: string, enum: [INCREASE, REDUCTION, TRANSFER] }
+        sourceLineId: { type: integer, format: int64 }
+        destinationLineId: { type: integer, format: int64 }
+        amountUsd: { type: number, exclusiveMinimum: 0 }
+        reason: { type: string }
+        idempotencyKey: { type: string }
+    BudgetMovementRequest:
+      type: object
+      required: [type, amountUsd]
+      properties:
+        type:
+          type: string
+          enum: [BANK_INCOME, INVENTORY_COST, OPERATING_EXPENSE, ADMINISTRATIVE_EXPENSE, COMMERCIAL_EXPENSE, FINANCIAL_EXPENSE, EXTRAORDINARY_EXPENSE, RESERVE, RELEASE, ADJUSTMENT_CREDIT, ADJUSTMENT_DEBIT]
+        amountUsd: { type: number, exclusiveMinimum: 0 }
+        description: { type: string }
+        costCategoryCode: { type: string }
+        costCenterId: { type: integer, format: int64 }
+        budgetPeriodId: { type: integer, format: int64 }
+        budgetLineId: { type: integer, format: int64 }
+        commitmentId: { type: integer, format: int64 }
+        responsibleUserId: { type: integer, format: int64 }
+        supplier: { type: string }
+        invoiceNumber: { type: string }
+        transactionDate: { type: string, format: date }
+        paymentMethod: { type: string }
+        costBehavior: { type: string, enum: [FIXED, VARIABLE] }
+        recurrence: { type: string, enum: [ONE_TIME, WEEKLY, MONTHLY, QUARTERLY, ANNUAL] }
+        projectReference: { type: string }
+        receiptPath: { type: string }
+        originalCurrency: { type: string, enum: [USD, VES], default: USD }
+        originalAmount: { type: number, exclusiveMinimum: 0 }
+        idempotencyKey: { type: string }

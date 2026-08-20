@@ -41,14 +41,17 @@ data class BankTransactionVerification(
  * Adaptador seguro de espera. Hace explícito que la estructura está lista, pero
  * impide llamadas bancarias ficticias y evita acreditar dinero sin confirmación real.
  */
-class PreparedBankBudgetProvider : BankBudgetProvider {
+class PreparedBankBudgetProvider(private val enabled: Boolean = false) : BankBudgetProvider {
     override val providerId: String = "PENDING_BANK_PROVIDER"
 
     override fun connectionStatus(): BankConnectionStatus =
-        BankConnectionStatus(connected = false, status = "READY_FOR_BANK_API")
+        BankConnectionStatus(connected = false, status = if (enabled) "READY_FOR_BANK_API" else "DISABLED")
 
     override fun fetchAvailableBudget(externalAccountId: String): BankBudgetSnapshot =
-        throw UnsupportedOperationException("La API bancaria todavía no ha sido configurada.")
+        throw UnsupportedOperationException(
+            if (enabled) "La API bancaria está habilitada, pero todavía no tiene un proveedor configurado."
+            else "La integración bancaria está desactivada mediante BANK_INTEGRATION_ENABLED=false."
+        )
 
     override fun verifyIncomingTransaction(externalTransactionId: String): BankTransactionVerification =
         BankTransactionVerification(externalTransactionId = externalTransactionId, verified = false)

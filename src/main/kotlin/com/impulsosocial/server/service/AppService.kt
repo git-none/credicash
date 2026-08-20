@@ -13,6 +13,7 @@ import com.impulsosocial.server.integrations.BcvRate
 import com.impulsosocial.server.integrations.RecaptchaService
 import com.impulsosocial.server.security.PasswordSecurity
 import com.impulsosocial.server.security.PasswordPolicy
+import com.impulsosocial.server.security.PinPolicy
 import com.impulsosocial.server.security.Roles
 import java.io.File
 import java.math.RoundingMode
@@ -108,6 +109,7 @@ class AppService(
 ) {
     private val logger = LoggerFactory.getLogger(AppService::class.java)
     private val gson = Gson()
+    private val budgetPlanningService = BudgetPlanningService(database)
     private val MAX_LOGIN_ATTEMPTS = 5
     private val MAX_PIN_ATTEMPTS = 5
     private val uploadRoot = File(config.uploadDir).apply { mkdirs() }
@@ -292,9 +294,7 @@ class AppService(
         PasswordPolicy.validationError(password, normalizedUsername, normalizedEmail)?.let { error ->
             throw AppException("BOOTSTRAP_ACCOUNTANT_PASSWORD no cumple la política de seguridad: $error")
         }
-        if (!pin.matches(Regex("\\d{6}"))) {
-            throw AppException("BOOTSTRAP_ACCOUNTANT_PIN debe contener exactamente 6 dígitos.")
-        }
+        PinPolicy.validationError(pin)?.let { throw AppException("BOOTSTRAP_ACCOUNTANT_PIN no cumple la política de seguridad: $it") }
 
         // La autenticación del contador se confirma primero y se guarda en una
         // transacción independiente. Así, un teléfono repetido o un dato de perfil
@@ -618,7 +618,7 @@ class AppService(
             throw AppException("Debes ser mayor de 18 años para registrarte.")
         }
         PasswordPolicy.validationError(request.password, username, email)?.let { throw AppException(it) }
-        if (!request.pin.matches(Regex("\\d{6}"))) throw AppException("El PIN debe contener exactamente 6 dígitos.")
+        PinPolicy.validationError(request.pin)?.let { throw AppException(it) }
         if (!request.acceptedTerms) throw AppException("Debes aceptar los Términos y Condiciones y la Política de Privacidad para crear la cuenta.")
         val termsVersion = request.termsVersion?.trim()?.takeIf { it.isNotBlank() }?.take(80)
             ?: throw AppException("No se recibió la versión de los Términos y Condiciones aceptados.")
@@ -3092,7 +3092,8 @@ class AppService(
                            id BIGSERIAL PRIMARY KEY,
                            contador_id BIGINT NOT NULL REFERENCES contadores(user_id) ON DELETE RESTRICT,
                            tipo VARCHAR(40) NOT NULL CHECK (tipo IN (
-                               'BANK_INCOME','OPERATING_EXPENSE','ADMINISTRATIVE_EXPENSE','RESERVE','RELEASE',
+                               'BANK_INCOME','INVENTORY_COST','OPERATING_EXPENSE','ADMINISTRATIVE_EXPENSE',
+                               'COMMERCIAL_EXPENSE','FINANCIAL_EXPENSE','EXTRAORDINARY_EXPENSE','RESERVE','RELEASE',
                                'ADJUSTMENT_CREDIT','ADJUSTMENT_DEBIT'
                            )),
                            monto_usd NUMERIC(18,2) NOT NULL CHECK (monto_usd > 0),
@@ -3111,7 +3112,7 @@ class AppService(
                 )
                 statement.executeUpdate("ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS categoria_gasto VARCHAR(60)")
                 statement.executeUpdate("ALTER TABLE movimientos_presupuestarios DROP CONSTRAINT IF EXISTS movimientos_presupuestarios_tipo_check")
-                statement.executeUpdate("ALTER TABLE movimientos_presupuestarios ADD CONSTRAINT movimientos_presupuestarios_tipo_check CHECK (tipo IN ('BANK_INCOME','OPERATING_EXPENSE','ADMINISTRATIVE_EXPENSE','RESERVE','RELEASE','ADJUSTMENT_CREDIT','ADJUSTMENT_DEBIT'))")
+                statement.executeUpdate("ALTER TABLE movimientos_presupuestarios ADD CONSTRAINT movimientos_presupuestarios_tipo_check CHECK (tipo IN ('BANK_INCOME','INVENTORY_COST','OPERATING_EXPENSE','ADMINISTRATIVE_EXPENSE','COMMERCIAL_EXPENSE','FINANCIAL_EXPENSE','EXTRAORDINARY_EXPENSE','RESERVE','RELEASE','ADJUSTMENT_CREDIT','ADJUSTMENT_DEBIT'))")
                 statement.executeUpdate("CREATE INDEX IF NOT EXISTS idx_budget_movements_expense_category ON movimientos_presupuestarios(contador_id,tipo,categoria_gasto,created_at DESC)")
                 statement.executeUpdate("CREATE INDEX IF NOT EXISTS idx_budget_movements_accountant_date ON movimientos_presupuestarios(contador_id,created_at DESC)")
                 statement.executeUpdate(
@@ -3200,14 +3201,15 @@ class AppService(
             """INSERT INTO carteras_presupuesto_contador(
                    contador_id,presupuesto_inicial_usd,saldo_disponible_usd,total_asignado_usd,
                    fuente_fondos,estado_integracion_bancaria,wallet_address
-               ) VALUES (?,?,?,0,'INITIAL_OPERATING_BUDGET','READY_FOR_BANK_API',
+               ) VALUES (?,?,?,0,'INITIAL_OPERATING_BUDGET',?,
                          'ISC-' || UPPER(SUBSTRING(MD5('ACCOUNTANT:' || ?::TEXT),1,32)))
                ON CONFLICT(contador_id) DO NOTHING"""
         ).use { statement ->
             statement.setLong(1, accountantId)
             statement.setBigDecimal(2, MoneyMath.usd(initial, "Saldo inicial"))
             statement.setBigDecimal(3, MoneyMath.usd(initial, "Saldo inicial"))
-            statement.setLong(4, accountantId)
+            statement.setString(4, if (config.bankIntegrationEnabled) "READY_FOR_BANK_API" else "DISABLED")
+            statement.setLong(5, accountantId)
             statement.executeUpdate()
         }
 
@@ -3218,6 +3220,7 @@ class AppService(
                    total_asignado_usd=COALESCE(total_asignado_usd,0),
                    fuente_fondos=COALESCE(NULLIF(fuente_fondos,''),'INITIAL_OPERATING_BUDGET'),
                    estado_integracion_bancaria=CASE
+                       WHEN ?=FALSE THEN 'DISABLED'
                        WHEN estado_integracion_bancaria IN ('READY_FOR_BANK_API','CONNECTED','SYNCING','ERROR','DISABLED')
                        THEN estado_integracion_bancaria
                        ELSE 'READY_FOR_BANK_API'
@@ -3231,7 +3234,8 @@ class AppService(
         ).use { statement ->
             statement.setBigDecimal(1, MoneyMath.usd(initial, "Saldo inicial"))
             statement.setBigDecimal(2, MoneyMath.usd(initial, "Saldo inicial"))
-            statement.setLong(3, accountantId)
+            statement.setBoolean(3, config.bankIntegrationEnabled)
+            statement.setLong(4, accountantId)
             if (statement.executeUpdate() != 1) {
                 throw AppException("No fue posible inicializar la cartera presupuestaria.")
             }
@@ -3831,21 +3835,41 @@ class AppService(
         request: BudgetMovementRequest
     ): AccountantWalletDto {
         requireAccountant(accountantId)
-        val type = request.type.trim().uppercase()
+        val requestedType = request.type.trim().uppercase()
         val allowedTypes = setOf(
-            "BANK_INCOME", "OPERATING_EXPENSE", "ADMINISTRATIVE_EXPENSE", "RESERVE", "RELEASE",
+            "BANK_INCOME", "INVENTORY_COST", "OPERATING_EXPENSE", "ADMINISTRATIVE_EXPENSE",
+            "COMMERCIAL_EXPENSE", "FINANCIAL_EXPENSE", "EXTRAORDINARY_EXPENSE", "RESERVE", "RELEASE",
             "ADJUSTMENT_CREDIT", "ADJUSTMENT_DEBIT"
         )
-        if (type !in allowedTypes) throw AppException("Tipo de movimiento presupuestario inválido.")
+        if (requestedType !in allowedTypes) throw AppException("Tipo de movimiento presupuestario inválido.")
         val amount = MoneyMath.positive(MoneyMath.usd(request.amountUsd), "Monto presupuestario")
         val bcv = safeCurrentBcvRate()
         if (bcv.rate <= 0.0) throw AppException("La tasa BCV no está disponible. No se registró el movimiento.")
         val amountBs = MoneyMath.usdToVes(amount, MoneyMath.rate(bcv.rate))
         val description = request.description.trim().ifBlank { "Movimiento presupuestario" }.take(500)
-        val expenseCategory = when (type) {
+        val expenseCategory = when (requestedType) {
             "OPERATING_EXPENSE" -> request.expenseCategory?.trim()?.uppercase()?.takeIf { it in OPERATING_EXPENSE_CATEGORIES } ?: "OTHER_OPERATING"
             "ADMINISTRATIVE_EXPENSE" -> request.expenseCategory?.trim()?.uppercase()?.takeIf { it in ADMINISTRATIVE_EXPENSE_CATEGORIES } ?: "OTHER_ADMINISTRATIVE"
             else -> null
+        }
+        val transactionDate = request.transactionDate?.trim()?.takeIf(String::isNotBlank)?.let { value ->
+            runCatching { LocalDate.parse(value) }.getOrElse { throw AppException("La fecha del movimiento debe usar el formato AAAA-MM-DD.") }
+        } ?: LocalDate.now(ZoneOffset.UTC)
+        val paymentMethod = request.paymentMethod?.trim()?.uppercase()?.takeIf(String::isNotBlank)?.take(40)
+        val costBehavior = request.costBehavior?.trim()?.uppercase()?.takeIf(String::isNotBlank)?.also {
+            if (it !in setOf("FIXED", "VARIABLE")) throw AppException("El comportamiento del costo debe ser FIXED o VARIABLE.")
+        }
+        val recurrence = request.recurrence?.trim()?.uppercase()?.takeIf(String::isNotBlank)?.also {
+            if (it !in setOf("ONE_TIME", "WEEKLY", "MONTHLY", "QUARTERLY", "ANNUAL")) {
+                throw AppException("La recurrencia del costo no es válida.")
+            }
+        }
+        val originalCurrency = request.originalCurrency.trim().uppercase().ifBlank { "USD" }
+        if (originalCurrency !in setOf("USD", "VES")) throw AppException("La moneda original debe ser USD o VES.")
+        val originalAmount = request.originalAmount?.let { MoneyMath.positive(BigDecimal.valueOf(it), "Monto original") }
+            ?: if (originalCurrency == "VES") amountBs else amount
+        val receiptPath = request.receiptPath?.trim()?.takeIf(String::isNotBlank)?.take(500)?.also {
+            if (it.contains("..") || File(it).isAbsolute) throw AppException("La ruta del comprobante no es válida.")
         }
         val idempotencyKey = request.idempotencyKey?.trim()?.takeIf { it.isNotBlank() }?.take(120)
             ?: "BUDGET-$accountantId-${UUID.randomUUID()}"
@@ -3853,6 +3877,14 @@ class AppService(
         return database.transaction { connection ->
             ensureWalletV28Schema(connection)
             ensureAccountantWallet(connection, accountantId)
+            val budgetContext = budgetPlanningService.prepareMovementContext(
+                connection = connection,
+                accountantId = accountantId,
+                requestedType = requestedType,
+                request = request,
+                amount = amount
+            )
+            val type = budgetContext.normalizedType
 
             val duplicate = connection.prepareStatement(
                 "SELECT 1 FROM movimientos_presupuestarios WHERE contador_id=? AND idempotency_key=? AND estado='COMPLETED'"
@@ -3889,7 +3921,8 @@ class AppService(
 
             val balanceAfter = when (type) {
                 "BANK_INCOME", "ADJUSTMENT_CREDIT" -> balanceBefore.add(amount, MoneyMath.CONTEXT)
-                "OPERATING_EXPENSE", "ADMINISTRATIVE_EXPENSE", "ADJUSTMENT_DEBIT" -> {
+                "INVENTORY_COST", "OPERATING_EXPENSE", "ADMINISTRATIVE_EXPENSE",
+                "COMMERCIAL_EXPENSE", "FINANCIAL_EXPENSE", "EXTRAORDINARY_EXPENSE", "ADJUSTMENT_DEBIT" -> {
                     val spendable = balanceBefore.subtract(reservedBefore, MoneyMath.CONTEXT)
                         .coerceAtLeast(BigDecimal.ZERO)
                     if (amount > spendable) {
@@ -3912,11 +3945,16 @@ class AppService(
             }
 
             val reference = "BUD-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8).uppercase()}"
-            connection.prepareStatement(
+            val movementId = connection.prepareStatement(
                 """INSERT INTO movimientos_presupuestarios(
                        contador_id,tipo,monto_usd,tasa_bcv,monto_bs,saldo_antes_usd,
-                       saldo_despues_usd,referencia,descripcion,categoria_gasto,idempotency_key,estado
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')"""
+                       saldo_despues_usd,referencia,descripcion,categoria_gasto,categoria_costo_id,
+                       centro_costo_id,periodo_presupuestario_id,partida_presupuestaria_id,compromiso_id,
+                       responsable_usuario_id,proveedor,numero_factura,fecha_operacion,metodo_pago,
+                       comportamiento_costo,recurrencia,referencia_proyecto,comprobante_path,
+                       moneda_original,monto_original,idempotency_key,estado_control_presupuesto,estado
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'COMPLETED')
+                   RETURNING id"""
             ).use { statement ->
                 statement.setLong(1, accountantId)
                 statement.setString(2, type)
@@ -3928,9 +3966,30 @@ class AppService(
                 statement.setString(8, reference)
                 statement.setString(9, description)
                 statement.setString(10, expenseCategory)
-                statement.setString(11, idempotencyKey)
-                statement.executeUpdate()
+                if (budgetContext.categoryId == null) statement.setNull(11, java.sql.Types.BIGINT) else statement.setLong(11, budgetContext.categoryId)
+                if (budgetContext.costCenterId == null) statement.setNull(12, java.sql.Types.BIGINT) else statement.setLong(12, budgetContext.costCenterId)
+                if (budgetContext.periodId == null) statement.setNull(13, java.sql.Types.BIGINT) else statement.setLong(13, budgetContext.periodId)
+                if (budgetContext.budgetLineId == null) statement.setNull(14, java.sql.Types.BIGINT) else statement.setLong(14, budgetContext.budgetLineId)
+                if (budgetContext.commitmentId == null) statement.setNull(15, java.sql.Types.BIGINT) else statement.setLong(15, budgetContext.commitmentId)
+                if (request.responsibleUserId == null) statement.setNull(16, java.sql.Types.BIGINT) else statement.setLong(16, request.responsibleUserId)
+                statement.setString(17, request.supplier?.trim()?.take(220))
+                statement.setString(18, request.invoiceNumber?.trim()?.take(120))
+                statement.setObject(19, transactionDate)
+                statement.setString(20, paymentMethod)
+                statement.setString(21, costBehavior)
+                statement.setString(22, recurrence)
+                statement.setString(23, request.projectReference?.trim()?.take(120))
+                statement.setString(24, receiptPath)
+                statement.setString(25, originalCurrency)
+                statement.setBigDecimal(26, originalAmount)
+                statement.setString(27, idempotencyKey)
+                statement.setString(28, budgetContext.controlStatus)
+                statement.executeQuery().use { result ->
+                    if (!result.next()) throw AppException("No fue posible registrar el movimiento presupuestario.")
+                    result.getLong(1)
+                }
             }
+            budgetPlanningService.settleCommitment(connection, accountantId, budgetContext.commitmentId, movementId)
             audit(
                 connection,
                 accountantId,
@@ -3939,7 +3998,7 @@ class AppService(
                 reference,
                 buildString {
                     append("$type")
-                    expenseCategoryLabel(type, expenseCategory)?.let { append(" · ").append(it) }
+                    (budgetContext.categoryName ?: expenseCategoryLabel(type, expenseCategory))?.let { append(" · ").append(it) }
                     append(" por US$ ${amount.toPlainString()}: $description")
                 }
             )
@@ -3968,8 +4027,12 @@ class AppService(
     ): AdvancedBudgetDto {
         data class BudgetMovementTotals(
             val bankAdjustments: BigDecimal,
+            val inventoryCosts: BigDecimal,
             val operatingExpenses: BigDecimal,
             val administrativeExpenses: BigDecimal,
+            val commercialExpenses: BigDecimal,
+            val financialExpenses: BigDecimal,
+            val extraordinaryExpenses: BigDecimal,
             val reserved: BigDecimal
         )
         val budgetMovementTotals = connection.prepareStatement(
@@ -3977,20 +4040,31 @@ class AppService(
                    COALESCE(SUM(CASE
                        WHEN tipo IN ('BANK_INCOME','ADJUSTMENT_CREDIT') THEN monto_usd
                        WHEN tipo='ADJUSTMENT_DEBIT' THEN -monto_usd ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN tipo='INVENTORY_COST' THEN monto_usd ELSE 0 END),0),
                    COALESCE(SUM(CASE WHEN tipo='OPERATING_EXPENSE' THEN monto_usd ELSE 0 END),0),
                    COALESCE(SUM(CASE WHEN tipo='ADMINISTRATIVE_EXPENSE' THEN monto_usd ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN tipo='COMMERCIAL_EXPENSE' THEN monto_usd ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN tipo='FINANCIAL_EXPENSE' THEN monto_usd ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN tipo='EXTRAORDINARY_EXPENSE' THEN monto_usd ELSE 0 END),0),
                    COALESCE(SUM(CASE WHEN tipo='RESERVE' THEN monto_usd WHEN tipo='RELEASE' THEN -monto_usd ELSE 0 END),0)
                FROM movimientos_presupuestarios
                WHERE contador_id=? AND estado='COMPLETED'"""
         ).use { statement ->
             statement.setLong(1, accountantId)
             statement.executeQuery().use { result ->
-                if (!result.next()) BudgetMovementTotals(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO)
+                if (!result.next()) BudgetMovementTotals(
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO
+                )
                 else BudgetMovementTotals(
                     result.getBigDecimal(1) ?: BigDecimal.ZERO,
                     result.getBigDecimal(2) ?: BigDecimal.ZERO,
                     result.getBigDecimal(3) ?: BigDecimal.ZERO,
-                    result.getBigDecimal(4)?.coerceAtLeast(BigDecimal.ZERO) ?: BigDecimal.ZERO
+                    result.getBigDecimal(4) ?: BigDecimal.ZERO,
+                    result.getBigDecimal(5) ?: BigDecimal.ZERO,
+                    result.getBigDecimal(6) ?: BigDecimal.ZERO,
+                    result.getBigDecimal(7) ?: BigDecimal.ZERO,
+                    result.getBigDecimal(8)?.coerceAtLeast(BigDecimal.ZERO) ?: BigDecimal.ZERO
                 )
             }
         }
@@ -4051,17 +4125,26 @@ class AppService(
                 loansOutstandingUsd = installments.outstanding,
                 overdueLoansUsd = installments.overdue,
                 reservedUsd = reserved,
-                expectedCollections30DaysUsd = installments.due30
+                expectedCollections30DaysUsd = installments.due30,
+                inventoryCostsUsd = budgetMovementTotals.inventoryCosts,
+                commercialExpensesUsd = budgetMovementTotals.commercialExpenses,
+                financialExpensesUsd = budgetMovementTotals.financialExpenses,
+                extraordinaryExpensesUsd = budgetMovementTotals.extraordinaryExpenses
             )
         )
         fun bs(value: BigDecimal): Double = MoneyMath.usdToVesOrZero(value.toDouble(), bcv.rate).toDouble()
 
         val budgetMovements = connection.prepareStatement(
-            """SELECT id,tipo,monto_usd,monto_bs,tasa_bcv,saldo_antes_usd,saldo_despues_usd,
-                      referencia,descripcion,categoria_gasto,created_at
-               FROM movimientos_presupuestarios
-               WHERE contador_id=? AND estado='COMPLETED'
-               ORDER BY created_at DESC LIMIT 100"""
+            """SELECT m.id,m.tipo,m.monto_usd,m.monto_bs,m.tasa_bcv,m.saldo_antes_usd,m.saldo_despues_usd,
+                      m.referencia,m.descripcion,m.categoria_gasto,c.codigo,c.nombre,c.grupo,
+                      cc.id,cc.nombre,periodo_presupuestario_id,partida_presupuestaria_id,compromiso_id,
+                      m.proveedor,m.numero_factura,m.fecha_operacion,m.metodo_pago,m.comportamiento_costo,
+                      m.recurrencia,m.referencia_proyecto,m.comprobante_path,m.created_at
+               FROM movimientos_presupuestarios m
+               LEFT JOIN catalogo_costos c ON c.id=m.categoria_costo_id
+               LEFT JOIN centros_costo cc ON cc.id=m.centro_costo_id
+               WHERE m.contador_id=? AND m.estado='COMPLETED'
+               ORDER BY m.created_at DESC LIMIT 100"""
         ).use { statement ->
             statement.setLong(1, accountantId)
             statement.executeQuery().use { result -> buildList {
@@ -4077,7 +4160,23 @@ class AppService(
                     description = result.getString(9),
                     expenseCategory = result.getString(10),
                     expenseCategoryLabel = expenseCategoryLabel(result.getString(2).orEmpty(), result.getString(10)),
-                    createdAt = result.getTimestamp(11)?.toInstant()?.toString().orEmpty()
+                    costCategoryCode = result.getString(11),
+                    costCategoryLabel = result.getString(12),
+                    costGroup = result.getString(13),
+                    costCenterId = result.getLong(14).let { if (result.wasNull()) null else it },
+                    costCenterName = result.getString(15),
+                    budgetPeriodId = result.getLong(16).let { if (result.wasNull()) null else it },
+                    budgetLineId = result.getLong(17).let { if (result.wasNull()) null else it },
+                    commitmentId = result.getLong(18).let { if (result.wasNull()) null else it },
+                    supplier = result.getString(19),
+                    invoiceNumber = result.getString(20),
+                    transactionDate = result.getObject(21, LocalDate::class.java)?.toString(),
+                    paymentMethod = result.getString(22),
+                    costBehavior = result.getString(23),
+                    recurrence = result.getString(24),
+                    projectReference = result.getString(25),
+                    receiptPath = result.getString(26),
+                    createdAt = result.getTimestamp(27)?.toInstant()?.toString().orEmpty()
                 ))
             } }
         }
@@ -4104,6 +4203,26 @@ class AppService(
             }
         val operatingBreakdown = expenseBreakdown("OPERATING_EXPENSE", OPERATING_EXPENSE_CATEGORIES)
         val administrativeBreakdown = expenseBreakdown("ADMINISTRATIVE_EXPENSE", ADMINISTRATIVE_EXPENSE_CATEGORIES)
+        val detailedCostBreakdown = connection.prepareStatement(
+            """SELECT c.codigo,c.nombre,c.grupo,COALESCE(SUM(m.monto_usd),0)
+               FROM movimientos_presupuestarios m
+               JOIN catalogo_costos c ON c.id=m.categoria_costo_id
+               WHERE m.contador_id=? AND m.estado='COMPLETED'
+                 AND m.tipo IN ('INVENTORY_COST','OPERATING_EXPENSE','ADMINISTRATIVE_EXPENSE',
+                                'COMMERCIAL_EXPENSE','FINANCIAL_EXPENSE','EXTRAORDINARY_EXPENSE')
+               GROUP BY c.codigo,c.nombre,c.grupo ORDER BY c.grupo,SUM(m.monto_usd) DESC"""
+        ).use { statement ->
+            statement.setLong(1, accountantId)
+            statement.executeQuery().use { result -> buildList {
+                while (result.next()) {
+                    val amount = result.getBigDecimal(4) ?: BigDecimal.ZERO
+                    add(ExpenseCategorySummaryDto(
+                        category = result.getString(1), label = result.getString(2),
+                        amountUsd = amount.toDouble(), amountBs = bs(amount), group = result.getString(3)
+                    ))
+                }
+            } }
+        }
 
         return AdvancedBudgetDto(
             bankBudgetUsd = bankBudget.toDouble(), bankBudgetBs = bs(bankBudget),
@@ -4113,7 +4232,12 @@ class AppService(
             investedUsd = invested.toDouble(), investedBs = bs(invested),
             operatingExpensesUsd = budgetMovementTotals.operatingExpenses.toDouble(), operatingExpensesBs = bs(budgetMovementTotals.operatingExpenses),
             administrativeExpensesUsd = budgetMovementTotals.administrativeExpenses.toDouble(), administrativeExpensesBs = bs(budgetMovementTotals.administrativeExpenses),
+            inventoryCostsUsd = budgetMovementTotals.inventoryCosts.toDouble(), inventoryCostsBs = bs(budgetMovementTotals.inventoryCosts),
+            commercialExpensesUsd = budgetMovementTotals.commercialExpenses.toDouble(), commercialExpensesBs = bs(budgetMovementTotals.commercialExpenses),
+            financialExpensesUsd = budgetMovementTotals.financialExpenses.toDouble(), financialExpensesBs = bs(budgetMovementTotals.financialExpenses),
+            extraordinaryExpensesUsd = budgetMovementTotals.extraordinaryExpenses.toDouble(), extraordinaryExpensesBs = bs(budgetMovementTotals.extraordinaryExpenses),
             operatingExpenseBreakdown = operatingBreakdown, administrativeExpenseBreakdown = administrativeBreakdown,
+            detailedCostBreakdown = detailedCostBreakdown,
             totalExpensesUsd = calculated.totalExpensesUsd.toDouble(), totalExpensesBs = bs(calculated.totalExpensesUsd),
             loansDisbursedUsd = loans.disbursed.toDouble(), loansDisbursedBs = bs(loans.disbursed),
             loansRecoveredUsd = installments.recovered.toDouble(), loansRecoveredBs = bs(installments.recovered),
@@ -7614,13 +7738,36 @@ class AppService(
         val notes=request.notes?.trim()?.takeIf { it.isNotBlank() }?.take(1000)
         if (!request.approved && notes.isNullOrBlank()) throw AppException("Explica por qué rechazas la solicitud.")
         database.transaction { connection ->
-            val requester = connection.prepareStatement("SELECT requested_by,status FROM solicitudes_doble_aprobacion WHERE id=? FOR UPDATE").use { statement ->
-                statement.setLong(1,approvalId);statement.executeQuery().use { r -> if(!r.next()) throw NotFoundException("La solicitud no existe."); r.getLong(1) to r.getString(2) }
+            data class SensitiveTarget(val requesterId: Long, val status: String, val actionType: String, val entityType: String?, val entityId: Long?)
+            val target = connection.prepareStatement(
+                "SELECT requested_by,status,action_type,entity_type,entity_id FROM solicitudes_doble_aprobacion WHERE id=? FOR UPDATE"
+            ).use { statement ->
+                statement.setLong(1,approvalId);statement.executeQuery().use { r ->
+                    if(!r.next()) throw NotFoundException("La solicitud no existe.")
+                    SensitiveTarget(
+                        requesterId = r.getLong(1), status = r.getString(2), actionType = r.getString(3),
+                        entityType = r.getString(4), entityId = r.getLong(5).takeUnless { r.wasNull() }
+                    )
+                }
             }
-            if(requester.second!="PENDING") throw AppException("La solicitud ya fue revisada.")
-            if(requester.first==userId) throw AppException("La misma persona no puede solicitar y aprobar la operación.")
+            if(target.status!="PENDING") throw AppException("La solicitud ya fue revisada.")
+            if(target.requesterId==userId) throw AppException("La misma persona no puede solicitar y aprobar la operación.")
             connection.prepareStatement("UPDATE solicitudes_doble_aprobacion SET status=?,approved_by=?,decision_notes=?,reviewed_at=NOW() WHERE id=?").use { statement ->
                 statement.setString(1,if(request.approved)"APPROVED" else "REJECTED");statement.setLong(2,userId);statement.setString(3,notes);statement.setLong(4,approvalId);statement.executeUpdate()
+            }
+            if (target.actionType == "BUDGET_COMMITMENT" && target.entityType == "BUDGET_COMMITMENT" && target.entityId != null) {
+                val commitmentStatus = if (request.approved) "COMMITTED" else "CANCELLED"
+                val updated = connection.prepareStatement(
+                    """UPDATE compromisos_presupuestarios
+                       SET estado=?,motivo_estado=?,updated_at=NOW()
+                       WHERE id=? AND estado='PENDING'"""
+                ).use { statement ->
+                    statement.setString(1, commitmentStatus)
+                    statement.setString(2, notes)
+                    statement.setLong(3, target.entityId)
+                    statement.executeUpdate()
+                }
+                if (updated != 1) throw AppException("El compromiso asociado ya no está pendiente.")
             }
             audit(connection,userId,if(request.approved)"SENSITIVE_APPROVAL_APPROVED" else "SENSITIVE_APPROVAL_REJECTED","DUAL_APPROVAL",approvalId.toString(),notes)
         }
@@ -7663,7 +7810,7 @@ class AppService(
         val operationalEmail = request.operationalEmail.trim().lowercase()
         if (!EMAIL_REGEX.matches(operationalEmail)) throw AppException("Ingresa un correo operativo válido.")
         PasswordPolicy.validationError(request.operationalPassword, operationalUsername, operationalEmail)?.let { throw AppException(it.replace("La contraseña", "La contraseña operativa")) }
-        if (!request.operationalPin.matches(Regex("\\d{6}"))) throw AppException("El PIN operativo debe contener exactamente 6 dígitos.")
+        PinPolicy.validationError(request.operationalPin)?.let { throw AppException(it.replace("El PIN", "El PIN operativo")) }
 
         val documentType = request.documentType.trim().uppercase().ifBlank { "NATIONAL_ID" }
         if (documentType !in setOf("NATIONAL_ID", "PASSPORT")) throw AppException("Tipo de documento inválido. Usa Cédula o Pasaporte; el RIF es exclusivo de Negocios asociados.")
@@ -7686,7 +7833,7 @@ class AppService(
         if (createBeneficiary) {
             if (!EMAIL_REGEX.matches(beneficiaryEmail)) throw AppException("Ingresa un correo válido para el acceso Beneficiario.")
             PasswordPolicy.validationError(beneficiaryPassword, beneficiaryUsername, beneficiaryEmail)?.let { throw AppException(it.replace("La contraseña", "La contraseña del Beneficiario")) }
-            if (!beneficiaryPin.matches(Regex("\\d{6}"))) throw AppException("El PIN del Beneficiario debe contener exactamente 6 dígitos.")
+            PinPolicy.validationError(beneficiaryPin)?.let { throw AppException(it.replace("El PIN", "El PIN del Beneficiario")) }
             if (beneficiaryUsername.equals(operationalUsername, true)) throw AppException("Los dos accesos deben utilizar usuarios distintos.")
             if (beneficiaryEmail.equals(operationalEmail, true)) throw AppException("Los dos accesos deben utilizar correos distintos.")
         }
@@ -7800,7 +7947,7 @@ class AppService(
         PasswordPolicy.validationError(request.password, username, email)?.let {
             throw AppException(it.replace("La contraseña", "La contraseña del Beneficiario"))
         }
-        if (!request.pin.matches(Regex("\\d{6}"))) throw AppException("El PIN del Beneficiario debe contener exactamente 6 dígitos.")
+        PinPolicy.validationError(request.pin)?.let { throw AppException(it.replace("El PIN", "El PIN del Beneficiario")) }
 
         val created = database.transaction { connection ->
             val operational = connection.prepareStatement(
@@ -8702,7 +8849,7 @@ class AppService(
             val password = rawKey(raw, "password").ifBlank { if (beneficiaryOnly) "Credi#${generatedTail}Aa1" else "" }
             PasswordPolicy.validationError(password, username, email)?.let { errors += it }
             val pin = rawKey(raw, "pin").ifBlank { if (beneficiaryOnly) generatedTail else "" }
-            if (!pin.matches(Regex("\\d{6}"))) errors += "El PIN debe contener exactamente 6 dígitos."
+            PinPolicy.validationError(pin)?.let(errors::add)
             if (beneficiaryOnly && rawKey(raw, "username").isBlank()) warnings += "Usuario generado automáticamente; también puede iniciar sesión con el correo."
             if (beneficiaryOnly && rawKey(raw, "password").isBlank()) warnings += "Credenciales iniciales generadas a partir de los últimos 6 dígitos del documento."
 

@@ -10,8 +10,10 @@ import com.impulsosocial.server.integrations.RecaptchaService
 import com.impulsosocial.server.model.*
 import com.impulsosocial.server.security.JwtService
 import com.impulsosocial.server.security.PasswordSecurity
+import com.impulsosocial.server.security.RequestRateLimiter
 import com.impulsosocial.server.service.AppException
 import com.impulsosocial.server.service.AppService
+import com.impulsosocial.server.service.BudgetPlanningService
 import com.impulsosocial.server.service.ForbiddenException
 import com.impulsosocial.server.service.NotFoundException
 import com.impulsosocial.server.service.UploadPolicy
@@ -24,6 +26,8 @@ import io.ktor.server.auth.jwt.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.calllogging.*
+import io.ktor.server.plugins.callid.*
+import io.ktor.server.plugins.defaultheaders.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.statuspages.*
@@ -62,6 +66,7 @@ private val startupPhase = AtomicReference(StartupPhase.STARTING)
 
 fun Application.module() {
     val config = AppConfig()
+    config.validateRuntimeSecurity()
     val database = Database(config)
     val security = PasswordSecurity()
     val jwt = JwtService(config)
@@ -75,6 +80,15 @@ fun Application.module() {
         pushNotifications = pushNotifications,
         bcvRateService = bcvRateService,
         recaptchaService = recaptchaService
+    )
+    val budgetPlanningService = BudgetPlanningService(database)
+    val authenticationRateLimiter = RequestRateLimiter(
+        maxRequests = config.authRateLimitMaxRequests,
+        windowSeconds = config.authRateLimitWindowSeconds
+    )
+    val registrationRateLimiter = RequestRateLimiter(
+        maxRequests = config.registrationRateLimitMaxRequests,
+        windowSeconds = config.registrationRateLimitWindowSeconds
     )
     val exporter = ExcelExporter(database)
     val appLogger = environment.log
@@ -134,7 +148,20 @@ fun Application.module() {
         appLogger.info("Credicash {}: apagado limpio completado.", CREDICASH_APP_VERSION)
     }
 
+    install(CallId) {
+        retrieveFromHeader(HttpHeaders.XRequestId)
+        verify { callId -> callId.length in 8..128 && callId.matches(Regex("[A-Za-z0-9._:-]+")) }
+        generate { UUID.randomUUID().toString() }
+        replyToHeader(HttpHeaders.XRequestId)
+    }
+    install(DefaultHeaders) {
+        header("X-Content-Type-Options", "nosniff")
+        header("X-Frame-Options", "DENY")
+        header("Referrer-Policy", "no-referrer")
+        header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    }
     install(CallLogging) {
+        callIdMdc("requestId")
         filter { call ->
             when (call.request.path()) {
                 "/health", "/health/live", "/health/ready" -> false
@@ -144,7 +171,14 @@ fun Application.module() {
     }
     install(ContentNegotiation) { gson() }
     install(CORS) {
-        anyHost()
+        if (config.corsAllowedOrigins.isEmpty()) {
+            if (!config.productionMode) anyHost()
+        } else {
+            config.corsAllowedOrigins.forEach { origin ->
+                val uri = java.net.URI(origin)
+                allowHost(uri.authority, schemes = listOf(uri.scheme))
+            }
+        }
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
         allowHeader("X-Registration-Token")
@@ -372,6 +406,13 @@ fun Application.module() {
             call.respond(service.versionPolicy())
         }
 
+        get("/api/v1/openapi.yaml") {
+            val specification = requireNotNull(javaClass.classLoader.getResourceAsStream("openapi/credicash.yaml")) {
+                "No se encontró la especificación OpenAPI de Credicash."
+            }.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            call.respondText(specification, ContentType.parse("application/yaml; charset=utf-8"))
+        }
+
         get("/api/v1/exchange-rate/bcv") {
             val rate = withContext(Dispatchers.IO) {
                 runCatching { bcvRateService.currentUsdRate() }
@@ -478,8 +519,14 @@ fun Application.module() {
         }
 
         route("/api/v1/auth") {
-            post("/register") { call.respond(HttpStatusCode.Created, service.register(call.receive())) }
-            post("/login") { call.respond(service.login(call.receive<LoginRequest>()).response) }
+            post("/register") {
+                if (!call.enforceRateLimit(registrationRateLimiter, "register")) return@post
+                call.respond(HttpStatusCode.Created, service.register(call.receive()))
+            }
+            post("/login") {
+                if (!call.enforceRateLimit(authenticationRateLimiter, "login")) return@post
+                call.respond(service.login(call.receive<LoginRequest>()).response)
+            }
 
             // Recuperación automática temporalmente fuera de servicio.
             // El restablecimiento se gestiona administrativamente en esta actualización.
@@ -496,13 +543,16 @@ fun Application.module() {
             post("/password/confirm-reset") { throw AppException("La recuperación automática está desactivada. Solicita a un Administrador el restablecimiento de tu acceso.") }
 
             post("/verify-pin") {
+                if (!call.enforceRateLimit(authenticationRateLimiter, "verify-pin")) return@post
                 val response = service.verifyPin(call.receive()) { userId, role, sessionId -> jwt.createAccessToken(userId, role, sessionId) }
                 call.respond(response)
             }
             post("/saved-session/pin-challenge") {
+                if (!call.enforceRateLimit(authenticationRateLimiter, "saved-pin-challenge")) return@post
                 call.respond(service.createSavedSessionPinChallenge(call.receive()))
             }
             post("/refresh") {
+                if (!call.enforceRateLimit(authenticationRateLimiter, "refresh")) return@post
                 val response = service.refreshSession(call.receive()) { userId, role, sessionId -> jwt.createAccessToken(userId, role, sessionId) }
                 call.respond(response)
             }
@@ -976,6 +1026,53 @@ fun Application.module() {
                     post("/budget-movements") {
                         call.requireAccountant(service)
                         call.respond(service.registerBudgetMovement(call.userId(), call.receive()))
+                    }
+                    get("/budget/catalog") {
+                        call.requireAccountant(service)
+                        call.respond(budgetPlanningService.catalog(call.userId()))
+                    }
+                    get("/cost-centers") {
+                        call.requireAccountant(service)
+                        call.respond(budgetPlanningService.costCenters(call.userId()))
+                    }
+                    post("/cost-centers") {
+                        call.requireAccountant(service)
+                        call.respond(HttpStatusCode.Created, budgetPlanningService.createCostCenter(call.userId(), call.receive()))
+                    }
+                    get("/budget/periods") {
+                        call.requireAccountant(service)
+                        call.respond(budgetPlanningService.periods(call.userId()))
+                    }
+                    post("/budget/periods") {
+                        call.requireAccountant(service)
+                        call.respond(HttpStatusCode.Created, budgetPlanningService.createPeriod(call.userId(), call.receive()))
+                    }
+                    patch("/budget/periods/{id}/status") {
+                        call.requireAccountant(service)
+                        val id = call.parameters["id"]?.toLongOrNull() ?: throw AppException("Periodo presupuestario inválido.")
+                        call.respond(budgetPlanningService.changePeriodStatus(call.userId(), id, call.receive()))
+                    }
+                    post("/budget/lines") {
+                        call.requireAccountant(service)
+                        call.respond(budgetPlanningService.saveBudgetLine(call.userId(), call.receive()))
+                    }
+                    get("/budget/dashboard") {
+                        call.requireAccountant(service)
+                        val periodId = call.request.queryParameters["periodId"]?.toLongOrNull()
+                        call.respond(budgetPlanningService.dashboard(call.userId(), periodId))
+                    }
+                    post("/budget/commitments") {
+                        call.requireAccountant(service)
+                        call.respond(HttpStatusCode.Created, budgetPlanningService.createCommitment(call.userId(), call.receive()))
+                    }
+                    patch("/budget/commitments/{id}/status") {
+                        call.requireAccountant(service)
+                        val id = call.parameters["id"]?.toLongOrNull() ?: throw AppException("Compromiso presupuestario inválido.")
+                        call.respond(budgetPlanningService.changeCommitmentStatus(call.userId(), id, call.receive()))
+                    }
+                    post("/budget/adjustments") {
+                        call.requireAccountant(service)
+                        call.respond(budgetPlanningService.adjustBudget(call.userId(), call.receive()))
                     }
                     get("/credit-loans") {
                         call.requireAccountant(service)
@@ -1636,6 +1733,23 @@ private suspend fun handleRegistrationDocumentVerification(call: ApplicationCall
     }
 
     call.respond(HttpStatusCode.Created, MessageResponse("Documento enviado para revisión."))
+}
+
+private suspend fun ApplicationCall.enforceRateLimit(limiter: RequestRateLimiter, action: String): Boolean {
+    val forwarded = request.headers["X-Forwarded-For"]?.substringBefore(',')?.trim()
+    val connecting = request.headers["CF-Connecting-IP"]?.trim()
+    val remoteAddress = (connecting ?: forwarded ?: request.local.remoteHost)
+        .replace(Regex("[^A-Za-z0-9:._-]"), "")
+        .take(100)
+        .ifBlank { "unknown" }
+    val decision = limiter.check("$action:$remoteAddress")
+    if (decision.allowed) return true
+    response.headers.append(HttpHeaders.RetryAfter, decision.retryAfterSeconds.toString())
+    respond(
+        HttpStatusCode.TooManyRequests,
+        MessageResponse("Demasiados intentos. Espera ${decision.retryAfterSeconds} segundos antes de intentar nuevamente.")
+    )
+    return false
 }
 
 
