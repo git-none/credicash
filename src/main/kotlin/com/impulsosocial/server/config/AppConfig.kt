@@ -1,6 +1,7 @@
 package com.impulsosocial.server.config
 
 import com.impulsosocial.server.security.PasswordPolicy
+import com.impulsosocial.server.security.PinPolicy
 
 import java.net.URI
 import java.net.URLDecoder
@@ -45,6 +46,19 @@ data class AppConfig(
     val persistentSessionTtlDays: Long = envLong("PERSISTENT_SESSION_TTL_DAYS", 30L, 1L, 365L),
     val publicBaseUrl: String = resolvePublicBaseUrl(),
     val uploadDir: String = env("UPLOAD_DIR", "data/uploads"),
+    val productionMode: Boolean = isProductionEnvironment(),
+    val requireStableJwtSecret: Boolean = envBoolean("REQUIRE_STABLE_JWT_SECRET", productionMode),
+    val corsAllowedOrigins: List<String> = optionalEnv("CORS_ALLOWED_ORIGINS")
+        ?.split(',')
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        ?.distinct()
+        .orEmpty(),
+    val authRateLimitMaxRequests: Int = envInt("AUTH_RATE_LIMIT_MAX_REQUESTS", 12, 3, 120),
+    val authRateLimitWindowSeconds: Long = envLong("AUTH_RATE_LIMIT_WINDOW_SECONDS", 60L, 10L, 3_600L),
+    val registrationRateLimitMaxRequests: Int = envInt("REGISTRATION_RATE_LIMIT_MAX_REQUESTS", 5, 1, 30),
+    val registrationRateLimitWindowSeconds: Long = envLong("REGISTRATION_RATE_LIMIT_WINDOW_SECONDS", 600L, 60L, 86_400L),
+    val bankIntegrationEnabled: Boolean = envBoolean("BANK_INTEGRATION_ENABLED", false),
     // Credicash 7.0.0: únicamente el Contador se provisiona desde variables protegidas.
     val bootstrapAccountantUsername: String = bootstrapEnv("BOOTSTRAP_ACCOUNTANT_USERNAME", ""),
     val bootstrapAccountantEmail: String = bootstrapEnv("BOOTSTRAP_ACCOUNTANT_EMAIL", ""),
@@ -93,9 +107,7 @@ data class AppConfig(
         PasswordPolicy.validationError(bootstrapAccountantPassword, bootstrapAccountantUsername, bootstrapAccountantEmail)?.let { error ->
             return "BOOTSTRAP_ACCOUNTANT_PASSWORD no cumple la política de seguridad: $error"
         }
-        if (!bootstrapAccountantPin.matches(Regex("\\d{6}"))) {
-            return "BOOTSTRAP_ACCOUNTANT_PIN debe contener exactamente 6 dígitos."
-        }
+        PinPolicy.validationError(bootstrapAccountantPin)?.let { return "BOOTSTRAP_ACCOUNTANT_PIN no cumple la política de seguridad: $it" }
         if (accountantInitialBudgetUsd < 0.0) {
             return "ACCOUNTANT_INITIAL_BUDGET_USD no puede ser negativo."
         }
@@ -106,6 +118,32 @@ data class AppConfig(
         bootstrapAccountantValidationError()?.let { throw IllegalArgumentException(it) }
     }
 
+    fun runtimeSecurityValidationError(): String? {
+        if (jwtSecret.toByteArray(StandardCharsets.UTF_8).size < 32) {
+            return "JWT_SECRET debe contener al menos 32 bytes para proteger las sesiones."
+        }
+        if (jwtSecret.uppercase().contains("CAMBIA_ESTA_CLAVE") || jwtSecret.lowercase() in setOf("secret", "changeme", "change-me")) {
+            return "JWT_SECRET conserva un valor de ejemplo conocido. Genera una clave aleatoria real."
+        }
+        if (requireStableJwtSecret && usesGeneratedJwtSecret) {
+            return "JWT_SECRET es obligatorio en producción. Define una clave aleatoria estable antes de iniciar Credicash."
+        }
+        corsAllowedOrigins.forEach { origin ->
+            val uri = runCatching { URI(origin) }.getOrNull()
+                ?: return "CORS_ALLOWED_ORIGINS contiene un origen inválido: $origin"
+            val local = uri.host in setOf("localhost", "127.0.0.1")
+            val hasUnexpectedParts = !uri.userInfo.isNullOrBlank() || !uri.query.isNullOrBlank() || !uri.fragment.isNullOrBlank() ||
+                uri.path.orEmpty() !in setOf("", "/")
+            if (uri.host.isNullOrBlank() || uri.scheme !in setOf("https", "http") || (uri.scheme == "http" && !local) || hasUnexpectedParts) {
+                return "CORS_ALLOWED_ORIGINS solo admite orígenes HTTPS completos; HTTP se reserva para localhost."
+            }
+        }
+        return null
+    }
+
+    fun validateRuntimeSecurity() {
+        runtimeSecurityValidationError()?.let { throw IllegalArgumentException(it) }
+    }
 
 }
 
@@ -295,6 +333,15 @@ private fun envInt(name: String, fallback: Int, minimum: Int, maximum: Int): Int
 private fun envLong(name: String, fallback: Long, minimum: Long, maximum: Long): Long =
     optionalEnv(name)?.toLongOrNull()?.coerceIn(minimum, maximum) ?: fallback.coerceIn(minimum, maximum)
 
+private fun envBoolean(name: String, fallback: Boolean): Boolean =
+    optionalEnv(name)?.let { value ->
+        when (value.lowercase()) {
+            "true", "1", "yes", "on" -> true
+            "false", "0", "no", "off" -> false
+            else -> fallback
+        }
+    } ?: fallback
+
 private fun optionalEnv(name: String): String? =
     System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }
 
@@ -311,6 +358,12 @@ private fun String.stripWrappingQuotes(): String {
         value.length >= 2 && value.startsWith('\'') && value.endsWith('\'') -> value.substring(1, value.length - 1).trim()
         else -> value
     }
+}
+
+private fun isProductionEnvironment(): Boolean {
+    if (!optionalEnv("RAILWAY_ENVIRONMENT").isNullOrBlank()) return true
+    return firstEnvironmentValue("APP_ENV", "ENVIRONMENT")
+        ?.lowercase() in setOf("production", "prod")
 }
 
 private fun requiredEnv(name: String): String =

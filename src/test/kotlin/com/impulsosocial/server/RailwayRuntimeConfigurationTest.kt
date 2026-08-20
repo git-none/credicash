@@ -72,9 +72,9 @@ class RailwayRuntimeConfigurationTest {
         val build = projectFile("build.gradle.kts")
         val runtime = projectFile("src/main/kotlin/com/impulsosocial/server/Version.kt")
         val dockerfile = projectFile("Dockerfile")
-        assertTrue(build.contains("version = \"1.0.0\""))
-        assertTrue(runtime.contains("CREDICASH_APP_VERSION = \"1.0.0\""))
-        assertTrue(dockerfile.contains("CREDICASH_BACKEND_VERSION=\"1.0.0\""))
+        assertTrue(build.contains("version = \"1.1.0\""))
+        assertTrue(runtime.contains("CREDICASH_APP_VERSION = \"1.1.0\""))
+        assertTrue(dockerfile.contains("CREDICASH_BACKEND_VERSION=\"1.1.0\""))
     }
 
     @Test
@@ -88,5 +88,19 @@ class RailwayRuntimeConfigurationTest {
         assertTrue(security.contains("withExpiresAt"))
         assertTrue(service.contains("attempts=attempts+1"))
         assertTrue(schema.contains("attempts INTEGER NOT NULL DEFAULT 0"))
+    }
+
+    @Test
+    fun `documenta la api presupuestaria y protege runtime de produccion`() {
+        val openApi = projectFile("src/main/resources/openapi/credicash.yaml")
+        val config = projectFile("src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt")
+        val application = projectFile("src/main/kotlin/com/impulsosocial/server/Application.kt")
+        assertTrue(openApi.contains("version: 1.1.0"))
+        assertTrue(openApi.contains("/accountant/budget/dashboard:"))
+        assertTrue(openApi.contains("/accountant/budget/commitments:"))
+        assertTrue(config.contains("REQUIRE_STABLE_JWT_SECRET"))
+        assertTrue(config.contains("CORS_ALLOWED_ORIGINS"))
+        assertTrue(application.contains("RequestRateLimiter"))
+        assertTrue(application.contains("callIdMdc(\"requestId\")"))
     }
 }

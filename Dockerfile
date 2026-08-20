@@ -1,6 +1,6 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /workspace
-ARG CREDICASH_BACKEND_VERSION="1.0.0"
+ARG CREDICASH_BACKEND_VERSION="1.1.0"
 RUN echo "Building Credicash Backend ${CREDICASH_BACKEND_VERSION} for Railway"
 COPY . ./
 RUN test -f gradle/wrapper/gradle-wrapper.jar || (echo "ERROR: falta gradle/wrapper/gradle-wrapper.jar en el contexto Docker" >&2; exit 1)
