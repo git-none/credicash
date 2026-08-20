@@ -9,6 +9,7 @@ build
 !gradle/wrapper/gradle-wrapper.jar
 .env
 .env.*
+!.env.example
 service-account.json
 runtime
 backups
