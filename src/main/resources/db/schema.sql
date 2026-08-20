@@ -2571,3 +2571,329 @@ CREATE INDEX IF NOT EXISTS idx_budget_movements_expense_category
 INSERT INTO versiones_esquema(version, description)
 VALUES (82, 'Credicash 7.2.6: registro directo a documentos, revisión por Administrador/Contador y costos operativos/administrativos categorizados')
 ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
+
+
+-- Migración 83 / Credicash 1.1.0: planificación y control presupuestario por estructura de costo.
+-- El catálogo es global y estable; los centros, periodos y partidas pertenecen a cada Contador.
+CREATE TABLE IF NOT EXISTS catalogo_costos (
+    id BIGSERIAL PRIMARY KEY,
+    codigo VARCHAR(50) NOT NULL UNIQUE,
+    parent_codigo VARCHAR(50) REFERENCES catalogo_costos(codigo) ON DELETE RESTRICT,
+    nombre VARCHAR(160) NOT NULL,
+    grupo VARCHAR(30) NOT NULL CHECK (grupo IN (
+        'INVENTORY','OPERATING','ADMINISTRATIVE','COMMERCIAL','FINANCIAL','EXTRAORDINARY'
+    )),
+    nivel INTEGER NOT NULL CHECK (nivel BETWEEN 1 AND 3),
+    permite_movimientos BOOLEAN NOT NULL DEFAULT FALSE,
+    requiere_comprobante BOOLEAN NOT NULL DEFAULT TRUE,
+    requiere_aprobacion BOOLEAN NOT NULL DEFAULT FALSE,
+    activo BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((nivel=1 AND parent_codigo IS NULL) OR (nivel>1 AND parent_codigo IS NOT NULL))
+);
+
+INSERT INTO catalogo_costos(
+    codigo,parent_codigo,nombre,grupo,nivel,permite_movimientos,requiere_comprobante,requiere_aprobacion
+) VALUES
+    ('INVENTORY',NULL,'Costos de mercancía e inventario','INVENTORY',1,FALSE,TRUE,FALSE),
+    ('INV-PURCHASES','INVENTORY','Adquisición y manejo de mercancía','INVENTORY',2,FALSE,TRUE,FALSE),
+    ('INV-PRODUCTS','INV-PURCHASES','Compra de productos','INVENTORY',3,TRUE,TRUE,FALSE),
+    ('INV-FREIGHT','INV-PURCHASES','Flete de adquisición','INVENTORY',3,TRUE,TRUE,FALSE),
+    ('INV-INSURANCE','INV-PURCHASES','Seguro de mercancía','INVENTORY',3,TRUE,TRUE,FALSE),
+    ('INV-TAXES','INV-PURCHASES','Impuestos de compra','INVENTORY',3,TRUE,TRUE,FALSE),
+    ('INV-IMPORT','INV-PURCHASES','Costos de importación','INVENTORY',3,TRUE,TRUE,FALSE),
+    ('INV-INITIAL-TRANSFER','INV-PURCHASES','Traslado inicial al almacén','INVENTORY',3,TRUE,TRUE,FALSE),
+    ('INV-SHRINKAGE','INV-PURCHASES','Mermas y productos dañados','INVENTORY',3,TRUE,TRUE,TRUE),
+    ('INV-ADJUSTMENTS','INV-PURCHASES','Ajustes de inventario','INVENTORY',3,TRUE,TRUE,TRUE),
+
+    ('OPERATING',NULL,'Gastos operativos','OPERATING',1,FALSE,TRUE,FALSE),
+    ('OP-TRANSPORT','OPERATING','Transporte y logística','OPERATING',2,FALSE,TRUE,FALSE),
+    ('OP-FUEL','OP-TRANSPORT','Combustible','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-VEHICLE-RENT','OP-TRANSPORT','Alquiler de vehículos','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-VEHICLE-MAINT','OP-TRANSPORT','Mantenimiento de vehículos','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-FREIGHT','OP-TRANSPORT','Fletes','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-TOLLS','OP-TRANSPORT','Peajes','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-PARKING','OP-TRANSPORT','Estacionamiento','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-LOAD','OP-TRANSPORT','Carga y descarga','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-INTERNAL-TRANSFER','OP-TRANSPORT','Traslado entre almacenes','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-STAFF-TRANSPORT','OP-TRANSPORT','Transporte de personal','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-DELIVERY','OP-TRANSPORT','Delivery de última milla','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-FIELD','OPERATING','Viáticos y operaciones de campo','OPERATING',2,FALSE,TRUE,FALSE),
+    ('OP-MEALS','OP-FIELD','Alimentación','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-LODGING','OP-FIELD','Hospedaje','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-PER-DIEM','OP-FIELD','Viáticos diarios','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-JOURNEY-MATERIAL','OP-FIELD','Materiales de jornada','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-ASSEMBLY','OP-FIELD','Montaje y desmontaje','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-TEMP-STAFF','OP-FIELD','Personal temporal','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-EVENT-SECURITY','OP-FIELD','Seguridad del evento','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-WAREHOUSE','OPERATING','Almacén','OPERATING',2,FALSE,TRUE,FALSE),
+    ('OP-WAREHOUSE-RENT','OP-WAREHOUSE','Alquiler del almacén','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-WAREHOUSE-UTILITIES','OP-WAREHOUSE','Servicios del almacén','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-STORAGE-EQUIPMENT','OP-WAREHOUSE','Equipos de almacenamiento','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-WAREHOUSE-CLEANING','OP-WAREHOUSE','Limpieza del almacén','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-PEST-CONTROL','OP-WAREHOUSE','Fumigación','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-WAREHOUSE-MAINT','OP-WAREHOUSE','Mantenimiento del almacén','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-HANDLING-MATERIAL','OP-WAREHOUSE','Material de manipulación','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-DISPATCH','OPERATING','Empaque y despacho','OPERATING',2,FALSE,TRUE,FALSE),
+    ('OP-BAGS','OP-DISPATCH','Bolsas','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-BOXES','OP-DISPATCH','Cajas','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-TAPE','OP-DISPATCH','Cintas','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-LABELS','OP-DISPATCH','Etiquetas','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-PROTECTION','OP-DISPATCH','Material protector','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-WAYBILLS','OP-DISPATCH','Impresión de guías','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-SHIPPING','OP-DISPATCH','Envíos nacionales','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-MESSENGER','OP-DISPATCH','Mensajería','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-RETURNS','OP-DISPATCH','Devoluciones','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-REPACK','OP-DISPATCH','Reempaque','OPERATING',3,TRUE,TRUE,FALSE),
+    ('OP-OTHER','OPERATING','Otros gastos operativos','OPERATING',3,TRUE,TRUE,TRUE),
+
+    ('ADMINISTRATIVE',NULL,'Gastos administrativos','ADMINISTRATIVE',1,FALSE,TRUE,FALSE),
+    ('ADMIN-PERSONNEL','ADMINISTRATIVE','Personal administrativo','ADMINISTRATIVE',2,FALSE,TRUE,FALSE),
+    ('ADMIN-SALARIES','ADMIN-PERSONNEL','Sueldos','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-FEES','ADMIN-PERSONNEL','Honorarios profesionales','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-BONUSES','ADMIN-PERSONNEL','Bonificaciones','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-BENEFITS','ADMIN-PERSONNEL','Beneficios laborales','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-PAYROLL-TAXES','ADMIN-PERSONNEL','Aportes laborales','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-VACATIONS','ADMIN-PERSONNEL','Vacaciones','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-TRAINING','ADMIN-PERSONNEL','Capacitación','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-UNIFORMS','ADMIN-PERSONNEL','Uniformes','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-OFFICE','ADMINISTRATIVE','Oficina','ADMINISTRATIVE',2,FALSE,TRUE,FALSE),
+    ('ADMIN-OFFICE-RENT','ADMIN-OFFICE','Alquiler de oficina','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-ELECTRICITY','ADMIN-OFFICE','Electricidad','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-WATER','ADMIN-OFFICE','Agua','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-INTERNET','ADMIN-OFFICE','Internet','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-PHONE','ADMIN-OFFICE','Telefonía','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-STATIONERY','ADMIN-OFFICE','Papelería','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-CLEANING','ADMIN-OFFICE','Limpieza','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-SECURITY','ADMIN-OFFICE','Seguridad','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-FURNITURE','ADMIN-OFFICE','Mobiliario','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-OFFICE-MAINT','ADMIN-OFFICE','Mantenimiento de oficina','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-TECH','ADMINISTRATIVE','Tecnología','ADMINISTRATIVE',2,FALSE,TRUE,FALSE),
+    ('ADMIN-HOSTING','ADMIN-TECH','Alojamiento y Railway','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-DOMAINS','ADMIN-TECH','Dominios','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-SOFTWARE','ADMIN-TECH','Software y suscripciones','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-IT-EQUIPMENT','ADMIN-TECH','Equipos informáticos','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-IT-MAINT','ADMIN-TECH','Mantenimiento técnico','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-LICENSES','ADMIN-TECH','Licencias','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-BACKUPS','ADMIN-TECH','Copias de seguridad','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-MESSAGING','ADMIN-TECH','Servicios de mensajería o correo','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-PROFESSIONAL','ADMINISTRATIVE','Servicios profesionales','ADMINISTRATIVE',2,FALSE,TRUE,FALSE),
+    ('ADMIN-ACCOUNTING','ADMIN-PROFESSIONAL','Contabilidad','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-LEGAL','ADMIN-PROFESSIONAL','Asesoría legal','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-AUDIT','ADMIN-PROFESSIONAL','Auditoría','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-CONSULTING','ADMIN-PROFESSIONAL','Consultoría','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-NOTARY','ADMIN-PROFESSIONAL','Notaría','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-DESIGN','ADMIN-PROFESSIONAL','Diseño profesional','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-TECH-SERVICES','ADMIN-PROFESSIONAL','Servicios técnicos','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-COMPLIANCE','ADMINISTRATIVE','Tributos y cumplimiento','ADMINISTRATIVE',2,FALSE,TRUE,FALSE),
+    ('ADMIN-TAXES','ADMIN-COMPLIANCE','Impuestos','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-RATES','ADMIN-COMPLIANCE','Tasas','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-PERMITS','ADMIN-COMPLIANCE','Permisos','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-REGISTRATIONS','ADMIN-COMPLIANCE','Registros','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-FINES','ADMIN-COMPLIANCE','Multas','ADMINISTRATIVE',3,TRUE,TRUE,TRUE),
+    ('ADMIN-RENEWALS','ADMIN-COMPLIANCE','Renovaciones','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-INSURANCE','ADMIN-COMPLIANCE','Seguros','ADMINISTRATIVE',3,TRUE,TRUE,FALSE),
+    ('ADMIN-OTHER','ADMINISTRATIVE','Otros gastos administrativos','ADMINISTRATIVE',3,TRUE,TRUE,TRUE),
+
+    ('COMMERCIAL',NULL,'Gastos comerciales y marketing','COMMERCIAL',1,FALSE,TRUE,FALSE),
+    ('COMM-MARKETING','COMMERCIAL','Marketing y ventas','COMMERCIAL',2,FALSE,TRUE,FALSE),
+    ('COMM-ADVERTISING','COMM-MARKETING','Publicidad digital','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-SOCIAL','COMM-MARKETING','Redes sociales','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-DESIGN','COMM-MARKETING','Diseño gráfico','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-PRINT','COMM-MARKETING','Impresión publicitaria','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-PROMOTIONS','COMM-MARKETING','Promociones','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-POP','COMM-MARKETING','Material POP','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-COMMISSIONS','COMM-MARKETING','Comisiones de venta','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-CUSTOMER-SERVICE','COMM-MARKETING','Atención al cliente','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-ACQUISITION','COMM-MARKETING','Captación de beneficiarios','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-EVENTS','COMM-MARKETING','Eventos promocionales','COMMERCIAL',3,TRUE,TRUE,FALSE),
+    ('COMM-SPONSORSHIP','COMM-MARKETING','Patrocinios','COMMERCIAL',3,TRUE,TRUE,TRUE),
+    ('COMM-OTHER','COMMERCIAL','Otros gastos comerciales','COMMERCIAL',3,TRUE,TRUE,TRUE),
+
+    ('FINANCIAL',NULL,'Gastos financieros','FINANCIAL',1,FALSE,TRUE,FALSE),
+    ('FIN-SERVICES','FINANCIAL','Servicios y costos financieros','FINANCIAL',2,FALSE,TRUE,FALSE),
+    ('FIN-BANK-FEES','FIN-SERVICES','Comisiones bancarias','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-INTEREST','FIN-SERVICES','Intereses','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-FX-DIFFERENCE','FIN-SERVICES','Diferencias cambiarias','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-TRANSFER','FIN-SERVICES','Costos de transferencias','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-PAYMENT-GATEWAY','FIN-SERVICES','Pasarelas de pago','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-COLLECTION','FIN-SERVICES','Comisiones por cobro','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-ROUNDING','FIN-SERVICES','Pérdidas por redondeo','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-RECONCILIATION','FIN-SERVICES','Gastos de conciliación','FINANCIAL',3,TRUE,TRUE,FALSE),
+    ('FIN-OTHER','FINANCIAL','Otros gastos financieros','FINANCIAL',3,TRUE,TRUE,TRUE),
+
+    ('EXTRAORDINARY',NULL,'Gastos extraordinarios','EXTRAORDINARY',1,FALSE,TRUE,TRUE),
+    ('EXT-EVENTS','EXTRAORDINARY','Eventos extraordinarios','EXTRAORDINARY',2,FALSE,TRUE,TRUE),
+    ('EXT-EMERGENCY','EXT-EVENTS','Emergencias','EXTRAORDINARY',3,TRUE,TRUE,TRUE),
+    ('EXT-LOSS','EXT-EVENTS','Daños o pérdidas','EXTRAORDINARY',3,TRUE,TRUE,TRUE),
+    ('EXT-LEGAL','EXT-EVENTS','Gastos legales excepcionales','EXTRAORDINARY',3,TRUE,TRUE,TRUE),
+    ('EXT-CLAIMS','EXT-EVENTS','Siniestros','EXTRAORDINARY',3,TRUE,TRUE,TRUE),
+    ('EXT-AUTHORIZED-ADJUSTMENT','EXT-EVENTS','Ajustes autorizados','EXTRAORDINARY',3,TRUE,TRUE,TRUE)
+ON CONFLICT(codigo) DO UPDATE SET
+    parent_codigo=EXCLUDED.parent_codigo,
+    nombre=EXCLUDED.nombre,
+    grupo=EXCLUDED.grupo,
+    nivel=EXCLUDED.nivel,
+    permite_movimientos=EXCLUDED.permite_movimientos,
+    requiere_comprobante=EXCLUDED.requiere_comprobante,
+    requiere_aprobacion=EXCLUDED.requiere_aprobacion,
+    updated_at=NOW();
+
+CREATE TABLE IF NOT EXISTS centros_costo (
+    id BIGSERIAL PRIMARY KEY,
+    contador_id BIGINT NOT NULL REFERENCES contadores(user_id) ON DELETE RESTRICT,
+    codigo VARCHAR(40) NOT NULL,
+    nombre VARCHAR(160) NOT NULL,
+    tipo VARCHAR(30) NOT NULL CHECK (tipo IN (
+        'CENTRAL','WAREHOUSE','LOGISTICS','MARKETING','TECHNOLOGY','JOURNEY',
+        'BRANCH','ADMINISTRATOR','PROJECT','OTHER'
+    )),
+    parent_id BIGINT REFERENCES centros_costo(id) ON DELETE RESTRICT,
+    responsable_usuario_id BIGINT REFERENCES usuarios(id) ON DELETE SET NULL,
+    activo BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(contador_id,codigo)
+);
+
+CREATE TABLE IF NOT EXISTS periodos_presupuestarios (
+    id BIGSERIAL PRIMARY KEY,
+    contador_id BIGINT NOT NULL REFERENCES contadores(user_id) ON DELETE RESTRICT,
+    codigo VARCHAR(30) NOT NULL,
+    nombre VARCHAR(160) NOT NULL,
+    fecha_inicio DATE NOT NULL,
+    fecha_fin DATE NOT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'DRAFT'
+        CHECK (estado IN ('DRAFT','SUBMITTED','APPROVED','ACTIVE','CLOSED','CANCELLED')),
+    moneda VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (moneda IN ('USD','VES')),
+    created_by BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+    approved_by BIGINT REFERENCES usuarios(id) ON DELETE RESTRICT,
+    approved_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (fecha_fin >= fecha_inicio),
+    UNIQUE(contador_id,codigo)
+);
+
+CREATE TABLE IF NOT EXISTS partidas_presupuestarias (
+    id BIGSERIAL PRIMARY KEY,
+    periodo_id BIGINT NOT NULL REFERENCES periodos_presupuestarios(id) ON DELETE RESTRICT,
+    categoria_costo_id BIGINT NOT NULL REFERENCES catalogo_costos(id) ON DELETE RESTRICT,
+    centro_costo_id BIGINT NOT NULL REFERENCES centros_costo(id) ON DELETE RESTRICT,
+    monto_aprobado_usd NUMERIC(18,2) NOT NULL CHECK (monto_aprobado_usd >= 0),
+    monto_modificado_usd NUMERIC(18,2) NOT NULL DEFAULT 0,
+    estado VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (estado IN ('ACTIVE','FROZEN','CLOSED','CANCELLED')),
+    notas VARCHAR(500),
+    created_by BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(periodo_id,categoria_costo_id,centro_costo_id)
+);
+
+CREATE TABLE IF NOT EXISTS compromisos_presupuestarios (
+    id BIGSERIAL PRIMARY KEY,
+    referencia VARCHAR(120) NOT NULL UNIQUE,
+    partida_id BIGINT NOT NULL REFERENCES partidas_presupuestarias(id) ON DELETE RESTRICT,
+    contador_id BIGINT NOT NULL REFERENCES contadores(user_id) ON DELETE RESTRICT,
+    monto_usd NUMERIC(18,2) NOT NULL CHECK (monto_usd > 0),
+    descripcion VARCHAR(500) NOT NULL,
+    proveedor VARCHAR(220),
+    numero_factura VARCHAR(120),
+    fecha_pago_esperada DATE,
+    estado VARCHAR(20) NOT NULL DEFAULT 'COMMITTED'
+        CHECK (estado IN ('PENDING','APPROVED','COMMITTED','PAID','CANCELLED','REVERSED')),
+    movimiento_gasto_id BIGINT REFERENCES movimientos_presupuestarios(id) ON DELETE RESTRICT,
+    idempotency_key VARCHAR(120) UNIQUE,
+    motivo_estado VARCHAR(500),
+    created_by BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ajustes_presupuestarios (
+    id BIGSERIAL PRIMARY KEY,
+    referencia VARCHAR(120) NOT NULL UNIQUE,
+    contador_id BIGINT NOT NULL REFERENCES contadores(user_id) ON DELETE RESTRICT,
+    tipo VARCHAR(20) NOT NULL CHECK (tipo IN ('INCREASE','REDUCTION','TRANSFER')),
+    partida_origen_id BIGINT REFERENCES partidas_presupuestarias(id) ON DELETE RESTRICT,
+    partida_destino_id BIGINT REFERENCES partidas_presupuestarias(id) ON DELETE RESTRICT,
+    monto_usd NUMERIC(18,2) NOT NULL CHECK (monto_usd > 0),
+    motivo VARCHAR(500) NOT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'COMPLETED' CHECK (estado IN ('PENDING','COMPLETED','REJECTED','REVERSED')),
+    idempotency_key VARCHAR(120) UNIQUE,
+    created_by BIGINT NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (
+        (tipo='INCREASE' AND partida_origen_id IS NULL AND partida_destino_id IS NOT NULL)
+        OR (tipo='REDUCTION' AND partida_origen_id IS NOT NULL AND partida_destino_id IS NULL)
+        OR (tipo='TRANSFER' AND partida_origen_id IS NOT NULL AND partida_destino_id IS NOT NULL AND partida_origen_id<>partida_destino_id)
+    )
+);
+
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS categoria_costo_id BIGINT REFERENCES catalogo_costos(id) ON DELETE RESTRICT;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS centro_costo_id BIGINT REFERENCES centros_costo(id) ON DELETE RESTRICT;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS periodo_presupuestario_id BIGINT REFERENCES periodos_presupuestarios(id) ON DELETE RESTRICT;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS partida_presupuestaria_id BIGINT REFERENCES partidas_presupuestarias(id) ON DELETE RESTRICT;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS compromiso_id BIGINT REFERENCES compromisos_presupuestarios(id) ON DELETE RESTRICT;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS responsable_usuario_id BIGINT REFERENCES usuarios(id) ON DELETE SET NULL;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS proveedor VARCHAR(220);
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS numero_factura VARCHAR(120);
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS fecha_operacion DATE NOT NULL DEFAULT CURRENT_DATE;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(40);
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS comportamiento_costo VARCHAR(10) CHECK (comportamiento_costo IS NULL OR comportamiento_costo IN ('FIXED','VARIABLE'));
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS recurrencia VARCHAR(20) CHECK (recurrencia IS NULL OR recurrencia IN ('ONE_TIME','WEEKLY','MONTHLY','QUARTERLY','ANNUAL'));
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS referencia_proyecto VARCHAR(120);
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS comprobante_path TEXT;
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS moneda_original VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (moneda_original IN ('USD','VES'));
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS monto_original NUMERIC(20,2);
+ALTER TABLE movimientos_presupuestarios ADD COLUMN IF NOT EXISTS estado_control_presupuesto VARCHAR(30) NOT NULL DEFAULT 'LEGACY'
+    CHECK (estado_control_presupuesto IN ('LEGACY','UNBUDGETED','WITHIN_BUDGET','OVER_BUDGET','COMMITMENT_SETTLED'));
+
+ALTER TABLE movimientos_presupuestarios DROP CONSTRAINT IF EXISTS movimientos_presupuestarios_tipo_check;
+ALTER TABLE movimientos_presupuestarios
+    ADD CONSTRAINT movimientos_presupuestarios_tipo_check CHECK (tipo IN (
+        'BANK_INCOME','INVENTORY_COST','OPERATING_EXPENSE','ADMINISTRATIVE_EXPENSE',
+        'COMMERCIAL_EXPENSE','FINANCIAL_EXPENSE','EXTRAORDINARY_EXPENSE',
+        'RESERVE','RELEASE','ADJUSTMENT_CREDIT','ADJUSTMENT_DEBIT'
+    ));
+
+UPDATE movimientos_presupuestarios m
+SET categoria_costo_id=c.id
+FROM catalogo_costos c
+WHERE m.categoria_costo_id IS NULL
+  AND c.codigo=CASE m.categoria_gasto
+      WHEN 'TRANSPORTATION' THEN 'OP-STAFF-TRANSPORT'
+      WHEN 'LOGISTICS' THEN 'OP-FREIGHT'
+      WHEN 'PER_DIEM' THEN 'OP-PER-DIEM'
+      WHEN 'DELIVERY' THEN 'OP-DELIVERY'
+      WHEN 'FUEL' THEN 'OP-FUEL'
+      WHEN 'LOADING_UNLOADING' THEN 'OP-LOAD'
+      WHEN 'OPERATIONAL_MAINTENANCE' THEN 'OP-VEHICLE-MAINT'
+      WHEN 'OTHER_OPERATING' THEN 'OP-OTHER'
+      WHEN 'PERSONNEL' THEN 'ADMIN-SALARIES'
+      WHEN 'BAGS' THEN 'OP-BAGS'
+      WHEN 'MARKETING' THEN 'COMM-ADVERTISING'
+      WHEN 'SHIPPING' THEN 'OP-SHIPPING'
+      WHEN 'PACKAGING' THEN 'OP-PROTECTION'
+      WHEN 'OFFICE_SUPPLIES' THEN 'ADMIN-STATIONERY'
+      WHEN 'ADMIN_SERVICES' THEN 'ADMIN-CONSULTING'
+      WHEN 'BANK_FEES' THEN 'FIN-BANK-FEES'
+      WHEN 'SOFTWARE_SUBSCRIPTIONS' THEN 'ADMIN-SOFTWARE'
+      WHEN 'OTHER_ADMINISTRATIVE' THEN 'ADMIN-OTHER'
+      ELSE NULL
+  END;
+
+CREATE INDEX IF NOT EXISTS idx_cost_catalog_parent ON catalogo_costos(parent_codigo,nivel,activo);
+CREATE INDEX IF NOT EXISTS idx_cost_centers_accountant ON centros_costo(contador_id,activo,tipo);
+CREATE INDEX IF NOT EXISTS idx_budget_periods_accountant ON periodos_presupuestarios(contador_id,fecha_inicio DESC);
+CREATE INDEX IF NOT EXISTS idx_budget_lines_period ON partidas_presupuestarias(periodo_id,estado);
+CREATE INDEX IF NOT EXISTS idx_budget_commitments_line ON compromisos_presupuestarios(partida_id,estado,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_budget_movements_planning ON movimientos_presupuestarios(periodo_presupuestario_id,partida_presupuestaria_id,estado,created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_budget_movement_commitment
+    ON movimientos_presupuestarios(compromiso_id) WHERE compromiso_id IS NOT NULL AND estado='COMPLETED';
+
+INSERT INTO versiones_esquema(version, description)
+VALUES (83, 'Credicash 1.1.0: catálogo jerárquico de costos, centros de costo, periodos, partidas, compromisos y control presupuestario')
+ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description, applied_at=NOW();
