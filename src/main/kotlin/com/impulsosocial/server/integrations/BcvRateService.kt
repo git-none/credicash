@@ -1,6 +1,7 @@
 package com.impulsosocial.server.integrations
 
 import com.google.gson.JsonParser
+import com.impulsosocial.server.CREDICASH_APP_VERSION
 import java.io.File
 import java.net.URI
 import java.net.http.HttpClient
@@ -56,7 +57,7 @@ class BcvRateService {
         val rate = listOf("promedio", "venta", "compra")
             .asSequence()
             .mapNotNull { key -> runCatching { json.get(key)?.takeIf { !it.isJsonNull }?.asDouble }.getOrNull() }
-            .firstOrNull { it != null && it > 0.0 }
+            .firstOrNull { it > 0.0 }
             ?: error("DolarApi no devolvió una tasa válida")
         val date = json.get("fechaActualizacion")?.asString?.takeIf { it.isNotBlank() }
             ?: OffsetDateTime.now().toString()
@@ -79,7 +80,7 @@ class BcvRateService {
         .uri(URI.create(url))
         .timeout(Duration.ofSeconds(8))
         .header("Accept", "application/json")
-        .header("User-Agent", "Credicash/7.2.9")
+        .header("User-Agent", "Credicash/$CREDICASH_APP_VERSION")
         .GET()
         .build()
         .let { request -> http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)) }

@@ -49,4 +49,12 @@ class UploadAccessPolicyTest {
         assertNull(policy.url("https://api.credicash.test", "documents/../secreto.pdf"))
         assertFalse(policy.canRead("documents/../secreto.pdf", null, null))
     }
+
+    @Test
+    fun `una categoria desconocida es privada por defecto`() {
+        val path = "future-sensitive/42/archivo.pdf"
+        val url = assertNotNull(policy.url("https://api.credicash.test", path))
+        assertTrue(url.contains("signature="))
+        assertFalse(policy.canRead(path, null, null))
+    }
 }

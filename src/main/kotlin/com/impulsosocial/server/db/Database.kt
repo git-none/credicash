@@ -1,5 +1,6 @@
 package com.impulsosocial.server.db
 
+import com.impulsosocial.server.CREDICASH_APP_VERSION
 import com.impulsosocial.server.config.AppConfig
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
@@ -27,7 +28,7 @@ class Database(private val config: AppConfig) {
             initializationFailTimeout = -1
             isAutoCommit = true
             poolName = "CredicashPool"
-            addDataSourceProperty("ApplicationName", "Credicash-7.2.9")
+            addDataSourceProperty("ApplicationName", "Credicash-$CREDICASH_APP_VERSION")
             addDataSourceProperty("tcpKeepAlive", "true")
             addDataSourceProperty("reWriteBatchedInserts", "true")
         })
@@ -270,6 +271,7 @@ class Database(private val config: AppConfig) {
 
             val requiredColumns = mapOf(
                 "productos" to listOf("base_price_usd", "bcv_rate", "pricing_mode", "price_updated_at", "minimum_stock", "last_counted_at", "technical_details"),
+                "desafios_autenticacion" to listOf("attempts"),
                 "sesiones_usuario" to listOf("device_id_hash", "last_heartbeat_at", "ended_reason"),
                 "movimientos_presupuestarios" to listOf("tipo", "monto_usd", "tasa_bcv", "saldo_antes_usd", "saldo_despues_usd", "idempotency_key"),
                 "facturas" to listOf("integrity_status", "integrity_score", "calculated_total_bs", "integrity_difference_bs", "document_hash", "algorithm_version", "validation_warnings", "integrity_verified_at"),

@@ -33,8 +33,8 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.http.content.*
 import io.ktor.serialization.gson.*
-import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
+import kotlinx.io.readByteArray
 import java.io.File
 import java.nio.file.StandardCopyOption
 import java.sql.SQLException
@@ -50,8 +50,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
-
-private const val CREDICASH_APP_VERSION = "7.2.9"
 
 private enum class StartupPhase {
     STARTING,
@@ -71,7 +69,7 @@ fun Application.module() {
     val pushNotifications = PushNotificationService(config)
     val bcvRateService = BcvRateService()
     val telegramService = TelegramService(config)
-    // 7.2.9: el módulo se conserva para una futura reactivación, pero no participa
+    // 1.0.0: el módulo se conserva para una futura reactivación, pero no participa
     // en registro, inicio de sesión, recuperación ni revisión de identidad.
     val telegramValidationEnabled = false
     val recaptchaService = RecaptchaService(config)
@@ -141,7 +139,7 @@ fun Application.module() {
         appLogger.warn("reCAPTCHA Enterprise: desactivado mediante RECAPTCHA_REQUIRED=false.")
     }
 
-    environment.monitor.subscribe(ApplicationStopped) {
+    monitor.subscribe(ApplicationStopped) {
         appLogger.info("Credicash {}: apagado solicitado; cerrando recursos.", CREDICASH_APP_VERSION)
         ledgerRealtimeNotifier.stop()
         operationalRealtimeNotifier.stop()
@@ -498,7 +496,7 @@ fun Application.module() {
         }
 
         post("/api/v1/integrations/telegram/webhook") {
-            // Se conserva la ruta para una futura reactivación, pero 7.2.9 no procesa
+            // Se conserva la ruta para una futura reactivación, pero 1.0.0 no procesa
             // vinculaciones, códigos ni validaciones del bot.
             call.respond(HttpStatusCode.Gone, mapOf("ok" to false, "status" to "disabled"))
         }
@@ -507,7 +505,7 @@ fun Application.module() {
             post("/register") { call.respond(HttpStatusCode.Created, service.register(call.receive())) }
             post("/login") { call.respond(service.login(call.receive<LoginRequest>()).response) }
 
-            // Credicash 7.2.9: Telegram se conserva en código para una futura reactivación,
+            // Credicash 1.0.0: Telegram se conserva en código para una futura reactivación,
             // pero queda completamente fuera del flujo activo de registro/validación.
             post("/verify-telegram") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
             post("/telegram/verify") { throw AppException("La validación por Telegram está desactivada en esta versión.") }
@@ -659,13 +657,13 @@ fun Application.module() {
                     call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                         try {
                             if (part is PartData.FileItem && part.name == "proof") {
-                                val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                 if (bytes.isEmpty()) throw AppException("El comprobante está vacío.")
                                 if (bytes.size > 10 * 1024 * 1024) throw AppException("La captura del comprobante debe pesar menos de 10 MB.")
                                 storedPath = service.storeUpload("payment-proofs", userId.toString(), part.originalFileName ?: "comprobante.jpg", bytes).relativePath
                             }
                         } finally {
-                            part.dispose()
+                            part.release()
                         }
                     }
                     call.respond(HttpStatusCode.Created, PaymentProofUploadResponse(storedPath ?: throw AppException("Selecciona la captura del comprobante.")))
@@ -684,7 +682,7 @@ fun Application.module() {
                                 when (part) {
                                     is PartData.FormItem -> part.name?.let { fields[it] = part.value }
                                     is PartData.FileItem -> if (part.name == "proof") {
-                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                         if (bytes.isEmpty()) throw AppException("El comprobante está vacío.")
                                         if (bytes.size > 10 * 1024 * 1024) throw AppException("La captura del comprobante debe pesar menos de 10 MB.")
                                         val stored = service.storeUpload(
@@ -699,7 +697,7 @@ fun Application.module() {
                                     else -> Unit
                                 }
                             } finally {
-                                part.dispose()
+                                part.release()
                             }
                         }
                         val proofPath = storedPath ?: throw AppException("Selecciona la captura del comprobante.")
@@ -761,7 +759,7 @@ fun Application.module() {
                                 when (part) {
                                     is PartData.FormItem -> part.name?.let { fields[it] = part.value }
                                     is PartData.FileItem -> if (part.name == "proof") {
-                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                         if (bytes.isEmpty()) throw AppException("El comprobante está vacío.")
                                         if (bytes.size > 10 * 1024 * 1024) throw AppException("La captura del comprobante debe pesar menos de 10 MB.")
                                         val stored = service.storeUpload(
@@ -776,7 +774,7 @@ fun Application.module() {
                                     else -> Unit
                                 }
                             } finally {
-                                part.dispose()
+                                part.release()
                             }
                         }
                         val request = CreatePurchaseRequest(
@@ -834,7 +832,7 @@ fun Application.module() {
                                                 else -> selfiePath != null
                                             }
                                             if (alreadyReceived) throw AppException("Cada documento del personal debe enviarse una sola vez.")
-                                            val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readBytes()
+                                            val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readByteArray()
                                             if (bytes.size > 12 * 1024 * 1024) throw AppException("Cada documento debe pesar menos de 12 MB.")
                                             val validated = UploadPolicy.validate("documents", bytes)
                                             if (fieldName == "selfie" && !validated.image) {
@@ -851,7 +849,7 @@ fun Application.module() {
                                         else -> Unit
                                     }
                                 } finally {
-                                    part.dispose()
+                                    part.release()
                                 }
                             }
                             val request = StaffAccountCreationRequest(
@@ -925,14 +923,14 @@ fun Application.module() {
                                         confirm = part.value.trim().equals("true", ignoreCase = true)
                                     }
                                     is PartData.FileItem -> if (part.name == "file") {
-                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                         if (bytes.size > 10 * 1024 * 1024) throw AppException("El Excel debe pesar menos de 10 MB.")
                                         excelBytes = bytes
                                     }
                                     else -> Unit
                                 }
                             } finally {
-                                part.dispose()
+                                part.release()
                             }
                         }
                         val bytes = excelBytes ?: throw AppException("Selecciona un archivo Excel .xlsx.")
@@ -958,7 +956,7 @@ fun Application.module() {
                         call.requireAccountant(service)
                         call.respond(service.accountantBeneficiaries(call.userId()))
                     }
-                    // Credicash 7.2.9: el Contador mantiene la cola global de Beneficiarios, aunque
+                    // Credicash 1.0.0: el Contador mantiene la cola global de Beneficiarios, aunque
                     // Administradores autorizados también puedan resolver su revisión documental.
                     get("/registration-requests") {
                         call.requireAccountantRegistrationFallback(service)
@@ -994,12 +992,12 @@ fun Application.module() {
                         call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                             try {
                                 if (part is PartData.FileItem && part.name == "image") {
-                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                     if (bytes.isEmpty()) throw AppException("El archivo del logo está vacío.")
                                     if (bytes.size > 10 * 1024 * 1024) throw AppException("El logo debe pesar menos de 10 MB.")
                                     logoPath = service.storeUpload("business-logos", id.toString(), part.originalFileName ?: "logo.jpg", bytes).relativePath
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         call.respond(service.updateAssociatedBusinessLogo(call.userId(), id, logoPath ?: throw AppException("Selecciona un logo.")))
                     }
@@ -1100,13 +1098,13 @@ fun Application.module() {
                                 when (part) {
                                     is PartData.FormItem -> if (part.name == "confirm") confirm = part.value.trim().equals("true", ignoreCase = true)
                                     is PartData.FileItem -> if (part.name == "file") {
-                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                         if (bytes.size > 10 * 1024 * 1024) throw AppException("El Excel debe pesar menos de 10 MB.")
                                         excelBytes = bytes
                                     }
                                     else -> Unit
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         val bytes = excelBytes ?: throw AppException("Selecciona un archivo Excel .xlsx.")
                         if (confirm) call.respond(HttpStatusCode.Created, service.importBeneficiaryExcel(call.userId(), bytes))
@@ -1214,13 +1212,13 @@ fun Application.module() {
                                 when (part) {
                                     is PartData.FormItem -> if (part.name == "confirm") confirm = part.value.trim().equals("true", ignoreCase = true)
                                     is PartData.FileItem -> if (part.name == "file") {
-                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                        val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                         if (bytes.size > 10 * 1024 * 1024) throw AppException("El Excel debe pesar menos de 10 MB.")
                                         excelBytes = bytes
                                     }
                                     else -> Unit
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         val bytes = excelBytes ?: throw AppException("Selecciona un archivo Excel .xlsx.")
                         if (confirm) call.respond(HttpStatusCode.Created, service.importProductsExcel(call.userId(), bytes))
@@ -1275,11 +1273,11 @@ fun Application.module() {
                         call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                             try {
                                 if (part is PartData.FileItem && part.name == "image") {
-                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                     if (bytes.size > 10 * 1024 * 1024) throw AppException("La imagen debe pesar menos de 10 MB.")
                                     imagePath = service.storeUpload("fair-products", "$fairId-$productId", part.originalFileName ?: "producto.jpg", bytes).relativePath
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         call.respond(service.updateFairProductImage(call.userId(), fairId, productId, imagePath ?: throw AppException("Selecciona una imagen.")))
                     }
@@ -1290,11 +1288,11 @@ fun Application.module() {
                         call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                             try {
                                 if (part is PartData.FileItem && (part.name == "image" || part.name == "cover")) {
-                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                     if (bytes.size > 10 * 1024 * 1024) throw AppException("La carátula debe pesar menos de 10 MB.")
                                     coverPath = service.storeUpload("fair-covers", fairId.toString(), part.originalFileName ?: "caratula.jpg", bytes).relativePath
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         call.respond(service.updateFairCover(call.userId(), fairId, coverPath ?: throw AppException("Selecciona una carátula.")))
                     }
@@ -1350,11 +1348,11 @@ fun Application.module() {
                         call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                             try {
                                 if (part is PartData.FileItem && part.name == "image") {
-                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                     if (bytes.size > 10 * 1024 * 1024) throw AppException("La imagen debe pesar menos de 10 MB.")
                                     imagePath = service.storeUpload("fair-productos", "$fairId-$productId", part.originalFileName ?: "producto.jpg", bytes).relativePath
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         call.respond(service.updateFairProductImage(call.userId(), fairId, productId, imagePath ?: throw AppException("Selecciona una imagen.")))
                     }
@@ -1366,11 +1364,11 @@ fun Application.module() {
                         call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                             try {
                                 if (part is PartData.FileItem && (part.name == "image" || part.name == "cover")) {
-                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                     if (bytes.size > 10 * 1024 * 1024) throw AppException("La carátula debe pesar menos de 10 MB.")
                                     coverPath = service.storeUpload("fair-covers", fairId.toString(), part.originalFileName ?: "caratula.jpg", bytes).relativePath
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         call.respond(service.updateFairCover(call.userId(), fairId, coverPath ?: throw AppException("Selecciona una carátula.")))
                     }
@@ -1383,11 +1381,11 @@ fun Application.module() {
                         call.receiveMultipart(formFieldLimit = 16 * 1024 * 1024).forEachPart { part ->
                             try {
                                 if (part is PartData.FileItem && (part.name == "image" || part.name == "cover")) {
-                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readBytes()
+                                    val bytes = part.provider().readRemaining(10L * 1024L * 1024L + 1L).readByteArray()
                                     if (bytes.size > 10 * 1024 * 1024) throw AppException("La carátula debe pesar menos de 10 MB.")
                                     coverPath = service.storeUpload("combo-covers", comboId.toString(), part.originalFileName ?: "caratula.jpg", bytes).relativePath
                                 }
-                            } finally { part.dispose() }
+                            } finally { part.release() }
                         }
                         call.respond(service.updateComboCover(call.userId(), comboId, coverPath ?: throw AppException("Selecciona una carátula.")))
                     }
@@ -1507,7 +1505,7 @@ private suspend fun initializeDatabaseInBackground(
             database.ensureAuthenticationSchema()
             database.verifyRequiredSchema()
 
-            logger.info("Credicash 7.0.0: Administradores se asignan desde las aplicaciones; bootstrap ADMIN deshabilitado.")
+            logger.info("Credicash {}: Administradores se asignan desde las aplicaciones; bootstrap ADMIN deshabilitado.", CREDICASH_APP_VERSION)
 
             runCatching {
                 if (service.hasAccountantAccount()) {
@@ -1544,7 +1542,7 @@ private suspend fun initializeDatabaseInBackground(
                 )
             }
 
-            logger.info("Credicash 7.0.0: Almacenistas se asignan desde las aplicaciones; bootstrap WAREHOUSE deshabilitado.")
+            logger.info("Credicash {}: Almacenistas se asignan desde las aplicaciones; bootstrap WAREHOUSE deshabilitado.", CREDICASH_APP_VERSION)
 
             startupLastError = null
             startupPhase.set(StartupPhase.READY)
@@ -1632,7 +1630,7 @@ private suspend fun handleRegistrationDocumentVerification(call: ApplicationCall
                         }
                         if (alreadyReceived) throw AppException("Cada archivo de verificación debe enviarse una sola vez.")
 
-                        val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readBytes()
+                        val bytes = part.provider().readRemaining(12L * 1024L * 1024L + 1L).readByteArray()
                         if (bytes.size > 12 * 1024 * 1024) throw AppException("Cada archivo debe pesar menos de 12 MB.")
                         val validated = UploadPolicy.validate("documents", bytes)
                         if (fieldName == "selfie" && !validated.image) {
@@ -1654,7 +1652,7 @@ private suspend fun handleRegistrationDocumentVerification(call: ApplicationCall
                     else -> Unit
                 }
             } finally {
-                part.dispose()
+                part.release()
             }
         }
 

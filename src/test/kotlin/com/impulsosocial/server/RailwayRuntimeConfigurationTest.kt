@@ -66,4 +66,27 @@ class RailwayRuntimeConfigurationTest {
         assertTrue(listenerIndex > initIndex)
         assertTrue(application.contains("bootstrapAccountantValidationError()"))
     }
+
+    @Test
+    fun `la version estable es coherente en compilacion y runtime`() {
+        val build = projectFile("build.gradle.kts")
+        val runtime = projectFile("src/main/kotlin/com/impulsosocial/server/Version.kt")
+        val dockerfile = projectFile("Dockerfile")
+        assertTrue(build.contains("version = \"1.0.0\""))
+        assertTrue(runtime.contains("CREDICASH_APP_VERSION = \"1.0.0\""))
+        assertTrue(dockerfile.contains("CREDICASH_BACKEND_VERSION=\"1.0.0\""))
+    }
+
+    @Test
+    fun `sesiones y desafios de pin tienen vencimiento y limite`() {
+        val config = projectFile("src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt")
+        val security = projectFile("src/main/kotlin/com/impulsosocial/server/security/Security.kt")
+        val service = projectFile("src/main/kotlin/com/impulsosocial/server/service/AppService.kt")
+        val schema = projectFile("src/main/resources/db/schema.sql")
+        assertTrue(config.contains("JWT_ACCESS_TOKEN_TTL_MINUTES"))
+        assertTrue(config.contains("PERSISTENT_SESSION_TTL_DAYS"))
+        assertTrue(security.contains("withExpiresAt"))
+        assertTrue(service.contains("attempts=attempts+1"))
+        assertTrue(schema.contains("attempts INTEGER NOT NULL DEFAULT 0"))
+    }
 }

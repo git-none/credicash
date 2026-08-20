@@ -49,7 +49,7 @@ class UploadAccessPolicy(
 
     fun isPrivate(relativePath: String): Boolean {
         val category = normalize(relativePath)?.substringBefore('/')?.lowercase() ?: return true
-        return category in PRIVATE_CATEGORIES
+        return category !in PUBLIC_CATEGORIES
     }
 
     private fun signature(path: String, expiresAt: Long): String {
@@ -75,6 +75,12 @@ class UploadAccessPolicy(
         private const val HMAC_ALGORITHM = "HmacSHA256"
         private val SIGNED_URL_TTL: Duration = Duration.ofMinutes(10)
         private val MAX_ACCEPTED_FUTURE: Duration = Duration.ofMinutes(11)
-        private val PRIVATE_CATEGORIES = setOf("documents", "staff-documents", "payment-proofs")
+        private val PUBLIC_CATEGORIES = setOf(
+            "fair-products",
+            "fair-productos",
+            "fair-covers",
+            "combo-covers",
+            "business-logos"
+        )
     }
 }

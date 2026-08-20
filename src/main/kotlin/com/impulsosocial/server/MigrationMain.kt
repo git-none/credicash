@@ -22,13 +22,13 @@ fun main() {
         val startedAt = System.currentTimeMillis()
         val database = Database(AppConfig())
         try {
-            println("Credicash 7.0.0: migración PostgreSQL manual, intento $attempt de $maxAttempts...")
+            println("Credicash $CREDICASH_APP_VERSION: migración PostgreSQL manual, intento $attempt de $maxAttempts...")
             database.ensureAuthenticationSchema()
             database.initializeSchema()
             database.ensureAuthenticationSchema()
             database.verifyRequiredSchema()
             val elapsed = System.currentTimeMillis() - startedAt
-            println("Credicash 7.0.0: migración completada correctamente en ${elapsed} ms.")
+            println("Credicash $CREDICASH_APP_VERSION: migración completada correctamente en ${elapsed} ms.")
             return
         } catch (error: Throwable) {
             lastError = error
@@ -37,7 +37,7 @@ fun main() {
                 .firstOrNull()
                 ?.sqlState
             System.err.println(
-                "Credicash 7.0.0: intento $attempt falló" +
+                "Credicash $CREDICASH_APP_VERSION: intento $attempt falló" +
                     (sqlState?.let { " (SQLSTATE=$it)" } ?: "") +
                     ": ${error.message.orEmpty()}"
             )
@@ -52,7 +52,7 @@ fun main() {
         }
     }
 
-    System.err.println("Credicash 7.0.0: la migración manual no pudo completarse tras $maxAttempts intentos.")
+    System.err.println("Credicash $CREDICASH_APP_VERSION: la migración manual no pudo completarse tras $maxAttempts intentos.")
     lastError?.printStackTrace()
     exitProcess(1)
 }

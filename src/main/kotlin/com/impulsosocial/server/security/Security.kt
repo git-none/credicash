@@ -4,6 +4,7 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import com.impulsosocial.server.config.AppConfig
 import de.mkammerer.argon2.Argon2Factory
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.Date
 import java.util.UUID
@@ -60,10 +61,17 @@ class PasswordSecurity {
 }
 
 class JwtService(private val config: AppConfig) {
+    init {
+        require(config.jwtSecret.toByteArray(StandardCharsets.UTF_8).size >= 32) {
+            "JWT_SECRET debe contener al menos 32 bytes aleatorios."
+        }
+    }
+
     val algorithm: Algorithm = Algorithm.HMAC256(config.jwtSecret)
 
     fun createAccessToken(userId: Long, role: String, sessionId: UUID): String {
         val now = Instant.now()
+        val expiresAt = now.plusSeconds(config.jwtAccessTokenTtlMinutes * 60L)
         return JWT.create()
             .withIssuer(config.jwtIssuer)
             .withAudience(config.jwtAudience)
@@ -72,6 +80,7 @@ class JwtService(private val config: AppConfig) {
             .withClaim("role", Roles.canonical(role))
             .withClaim("sessionId", sessionId.toString())
             .withIssuedAt(Date.from(now))
+            .withExpiresAt(Date.from(expiresAt))
             .sign(algorithm)
     }
 }

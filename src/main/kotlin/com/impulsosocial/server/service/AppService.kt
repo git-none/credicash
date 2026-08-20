@@ -3,6 +3,7 @@ package com.impulsosocial.server.service
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.Gson
+import com.impulsosocial.server.CREDICASH_APP_VERSION
 import com.impulsosocial.server.config.AppConfig
 import com.impulsosocial.server.db.Database
 import com.impulsosocial.server.model.*
@@ -146,6 +147,7 @@ class AppService(
     private val logger = LoggerFactory.getLogger(AppService::class.java)
     private val gson = Gson()
     private val MAX_LOGIN_ATTEMPTS = 5
+    private val MAX_PIN_ATTEMPTS = 5
     private val uploadRoot = File(config.uploadDir).apply { mkdirs() }
     private val uploadAccessPolicy = UploadAccessPolicy(config.jwtSecret)
     private val secureRandom = SecureRandom()
@@ -1468,7 +1470,9 @@ class AppService(
         )
     }
 
-    fun verifyPin(request: VerifyPinRequest, accessTokenFactory: (Long, String, UUID) -> String): VerifyPinResponse = database.transaction { connection ->
+    fun verifyPin(request: VerifyPinRequest, accessTokenFactory: (Long, String, UUID) -> String): VerifyPinResponse {
+        var pinFailure: String? = null
+        val response: VerifyPinResponse? = database.transaction { connection ->
         database.ensureAuthenticationSchema(connection)
         if (!request.pin.matches(Regex("\\d{6}"))) {
             throw AppException("El PIN debe contener exactamente 6 dígitos.")
@@ -1505,7 +1509,30 @@ class AppService(
             .getOrElse {
                 throw AppException("No fue posible validar el PIN. Restablécelo e intenta nuevamente.")
             }
-        if (!pinIsValid) throw AppException("PIN incorrecto.")
+        if (!pinIsValid) {
+            val attempts = connection.prepareStatement(
+                """
+                UPDATE desafios_autenticacion
+                SET attempts=attempts+1,
+                    used_at=CASE WHEN attempts+1>=? THEN NOW() ELSE used_at END
+                WHERE token=?::uuid AND user_id=? AND purpose='LOGIN_PIN' AND used_at IS NULL
+                RETURNING attempts
+                """.trimIndent()
+            ).use { statement ->
+                statement.setInt(1, MAX_PIN_ATTEMPTS)
+                statement.setString(2, request.challengeToken.trim())
+                statement.setLong(3, request.userId)
+                statement.executeQuery().use { result ->
+                    if (result.next()) result.getInt("attempts") else MAX_PIN_ATTEMPTS
+                }
+            }
+            pinFailure = if (attempts >= MAX_PIN_ATTEMPTS) {
+                "Demasiados intentos de PIN. Inicia el proceso de acceso nuevamente."
+            } else {
+                "PIN incorrecto. Quedan ${MAX_PIN_ATTEMPTS - attempts} intento(s)."
+            }
+            return@transaction null
+        }
 
         val normalizedDeviceId = request.deviceIdHash.trim().lowercase()
         if (!normalizedDeviceId.matches(Regex("[a-f0-9]{64}"))) {
@@ -1607,7 +1634,9 @@ class AppService(
             audit(connection, request.userId, "USER_LOGIN", "USER", request.userId.toString(), "Inicio de sesión exitoso")
         }
 
-        VerifyPinResponse(token, persistentSession.toString(), user)
+            VerifyPinResponse(token, persistentSession.toString(), user)
+        }
+        return response ?: throw AppException(pinFailure ?: "No fue posible validar el PIN.")
     }
 
     fun createSavedSessionPinChallenge(request: SavedSessionPinChallengeRequest): SavedSessionPinChallengeResponse = database.transaction { connection ->
@@ -1676,9 +1705,10 @@ class AppService(
         }
         val canonicalRole = Roles.canonical(row.role)
         connection.prepareStatement(
-            "UPDATE sesiones_usuario SET last_used_at=NOW(),last_heartbeat_at=NOW(), expires_at=TIMESTAMPTZ '9999-12-31 23:59:59+00' WHERE id=?"
+            "UPDATE sesiones_usuario SET last_used_at=NOW(),last_heartbeat_at=NOW(), expires_at=NOW() + (? * INTERVAL '1 day') WHERE id=?"
         ).use { statement ->
-            statement.setObject(1, sessionId)
+            statement.setLong(1, config.persistentSessionTtlDays)
+            statement.setObject(2, sessionId)
             statement.executeUpdate()
         }
         val accessToken = accessTokenFactory(row.userId, canonicalRole, sessionId)
@@ -1706,13 +1736,14 @@ class AppService(
     ): UUID = connection.prepareStatement(
         """
         INSERT INTO sesiones_usuario(user_id,device_id_hash,device_name,app_version,expires_at,last_used_at,last_heartbeat_at)
-        VALUES (?,?,?,?,TIMESTAMPTZ '9999-12-31 23:59:59+00',NOW(),NOW()) RETURNING id
+        VALUES (?,?,?,?,NOW() + (? * INTERVAL '1 day'),NOW(),NOW()) RETURNING id
         """.trimIndent()
     ).use { statement ->
         statement.setLong(1, userId)
         statement.setString(2, deviceIdHash.trim().lowercase().takeIf { it.isNotBlank() })
         statement.setString(3, deviceName?.trim()?.take(255))
         statement.setString(4, appVersion?.trim()?.take(80))
+        statement.setLong(5, config.persistentSessionTtlDays)
         statement.executeQuery().use { result ->
             if (!result.next()) error("No fue posible crear la sesión persistente.")
             result.getObject(1, UUID::class.java)
@@ -8144,7 +8175,7 @@ class AppService(
                        summary_json=EXCLUDED.summary_json,closed_at=NOW(),updated_at=NOW()"""
             ).use { statement ->
                 statement.setString(1, request.periodMonth); statement.setLong(2, accountantId)
-                statement.setString(3, gson.toJson(mapOf("closedBy" to accountantId, "version" to "7.0.0"))); statement.executeUpdate()
+                statement.setString(3, gson.toJson(mapOf("closedBy" to accountantId, "version" to CREDICASH_APP_VERSION))); statement.executeUpdate()
             }
             audit(connection, accountantId, "ACCOUNTANT_CLOSED_PERIOD", "ACCOUNTING_PERIOD", request.periodMonth, "Cierre mensual completado")
         }
@@ -8351,7 +8382,7 @@ class AppService(
         val operational = me(createdIds.first)
         val beneficiary = createdIds.second?.let(::me)
         notifyUsers(listOf(createdIds.first), "Acceso Credicash creado", "El Contador creó tu acceso de ${if (role == Roles.ADMIN) "Administrador" else "Almacenista"}.", "STAFF_CREATED")
-        beneficiary?.let { notifyUsers(listOf(it.id.toLong()), "Acceso Beneficiario creado", "Tu acceso Beneficiario está vinculado a tu cuenta de personal.", "BENEFICIARY_CREATED") }
+        beneficiary?.let { notifyUsers(listOf(it.id), "Acceso Beneficiario creado", "Tu acceso Beneficiario está vinculado a tu cuenta de personal.", "BENEFICIARY_CREATED") }
         return StaffAccountCreationResultDto(
             personGroupId = personGroupId.toString(),
             operational = operational,
@@ -10567,8 +10598,14 @@ class AppService(
 
     private fun verifyChallenge(connection: Connection, tokenText: String, userId: Long, purpose: String, consume: Boolean) {
         val token = runCatching { UUID.fromString(tokenText) }.getOrElse { throw AppException("La autorización temporal no es válida.") }
-        val valid = connection.prepareStatement("SELECT 1 FROM desafios_autenticacion WHERE token=? AND user_id=? AND purpose=? AND used_at IS NULL AND expires_at>NOW() FOR UPDATE").use { statement ->
-            statement.setObject(1, token); statement.setLong(2, userId); statement.setString(3, purpose); statement.executeQuery().use { it.next() }
+        val valid = connection.prepareStatement(
+            "SELECT 1 FROM desafios_autenticacion WHERE token=? AND user_id=? AND purpose=? AND used_at IS NULL AND expires_at>NOW() AND (purpose<>'LOGIN_PIN' OR attempts<?) FOR UPDATE"
+        ).use { statement ->
+            statement.setObject(1, token)
+            statement.setLong(2, userId)
+            statement.setString(3, purpose)
+            statement.setInt(4, MAX_PIN_ATTEMPTS)
+            statement.executeQuery().use { it.next() }
         }
         if (!valid) throw AppException("La autorización temporal expiró. Inicia el proceso nuevamente.")
         if (consume) connection.prepareStatement("UPDATE desafios_autenticacion SET used_at=NOW() WHERE token=?").use { it.setObject(1, token); it.executeUpdate() }

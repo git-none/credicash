@@ -1,5 +1,6 @@
 package com.impulsosocial.server.model
 
+import com.impulsosocial.server.CREDICASH_APP_VERSION
 data class ErrorResponse(
     val message: String,
     val code: String = "GENERIC_ERROR",
@@ -1326,9 +1327,9 @@ data class PublicLedgerPageDto(
     val transactions: List<PublicLedgerTransactionDto>
 )
 
-/** Política SemVer visible de Credicash 7.2.9. */
+/** Política SemVer visible de Credicash. */
 data class VersionPolicyDto(
-    val currentVersion: String = "7.2.9",
+    val currentVersion: String = CREDICASH_APP_VERSION,
     val scheme: String = "MAJOR.MINOR.PATCH",
     val majorMeaning: String = "Cambios estructurales, módulos principales o contratos incompatibles.",
     val minorMeaning: String = "Funciones nuevas compatibles dentro de la misma generación.",
@@ -1423,7 +1424,7 @@ data class InventoryIntegrityItemDto(
 )
 
 data class OperationalQualitySummaryDto(
-    val version: String = "7.2.9",
+    val version: String = CREDICASH_APP_VERSION,
     val generatedAt: String,
     val pendingPaymentReports: Int,
     val highRiskPaymentReports: Int,

@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.impulsosocial"
-version = "7.2.9"
+version = "1.0.0"
 
 repositories { mavenCentral() }
 
@@ -43,6 +43,7 @@ dependencies {
     // APIs usadas directamente por el código. Se declaran de forma explícita
     // para evitar errores de accesibilidad de dependencias indirectas en Kotlin 2.4.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-io-core-jvm:0.9.0")
     implementation("com.auth0:java-jwt:4.5.0")
     implementation("com.google.code.gson:gson:2.14.0")
     implementation("org.slf4j:slf4j-api:2.0.18")

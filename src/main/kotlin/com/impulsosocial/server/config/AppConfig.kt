@@ -41,6 +41,8 @@ data class AppConfig(
     val usesGeneratedJwtSecret: Boolean = configuredJwtSecret == null,
     val jwtIssuer: String = env("JWT_ISSUER", "credicash"),
     val jwtAudience: String = env("JWT_AUDIENCE", "credicash-android"),
+    val jwtAccessTokenTtlMinutes: Long = envLong("JWT_ACCESS_TOKEN_TTL_MINUTES", 60L, 5L, 1_440L),
+    val persistentSessionTtlDays: Long = envLong("PERSISTENT_SESSION_TTL_DAYS", 30L, 1L, 365L),
     val publicBaseUrl: String = resolvePublicBaseUrl(),
     val uploadDir: String = env("UPLOAD_DIR", "data/uploads"),
     // Credicash 7.0.0: únicamente el Contador se provisiona desde variables protegidas.

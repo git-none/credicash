@@ -151,8 +151,10 @@ CREATE TABLE IF NOT EXISTS desafios_autenticacion (
     purpose VARCHAR(40) NOT NULL CHECK (purpose IN ('LOGIN_PIN','REGISTRATION_DOCUMENT')),
     expires_at TIMESTAMPTZ NOT NULL,
     used_at TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE desafios_autenticacion ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_auth_challenges_user ON desafios_autenticacion(user_id, purpose, expires_at);
 
 CREATE TABLE IF NOT EXISTS codigos_verificacion (
