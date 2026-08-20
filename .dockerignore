@@ -8,7 +8,9 @@ build
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
 .env
+.env.*
 service-account.json
 runtime
 backups
 uploads
+data

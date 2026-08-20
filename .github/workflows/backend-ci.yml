@@ -1,0 +1,41 @@
+name: Verificar backend
+
+on:
+  push:
+    branches: [main, debug]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ejecutar pruebas y construir JAR
+        run: ./gradlew --no-daemon --console=plain test buildFatJar
+
+      - name: Construir imagen Docker
+        run: docker build --tag credicash-backend:ci .
+
+      - name: Publicar reporte de pruebas fallidas
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-pruebas-backend
+          path: build/reports/tests/test
+          if-no-files-found: ignore

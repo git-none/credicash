@@ -1,4 +1,4 @@
-# Credicash Backend 7.2.9
+# Credicash Backend 1.0.0
 
 Backend Kotlin/Ktor de Credicash, preparado para desplegarse en Railway con Docker y PostgreSQL.
 
@@ -7,7 +7,7 @@ Backend Kotlin/Ktor de Credicash, preparado para desplegarse en Railway con Dock
 1. Conecta este repositorio como un servicio nuevo. Railway detectará `railway.toml` y construirá `Dockerfile`.
 2. Añade PostgreSQL al mismo proyecto.
 3. En las variables del backend, crea una referencia `DATABASE_URL` hacia `Postgres.DATABASE_URL`.
-4. Define `JWT_SECRET` con un valor aleatorio, largo y estable.
+4. Define `JWT_SECRET` con al menos 32 bytes aleatorios y mantenlo estable entre despliegues.
 5. Genera un dominio público para el servicio. Credicash usa `RAILWAY_PUBLIC_DOMAIN` automáticamente. Si empleas un dominio personalizado, define `PUBLIC_BASE_URL=https://tu-dominio` sin `/api/v1`.
 6. Conecta un volumen persistente al backend y móntalo en `/data`. Mantén `UPLOAD_DIR=/data/uploads`.
 
@@ -28,6 +28,8 @@ Variables mínimas de producción:
 - `DATABASE_URL`: referencia privada al PostgreSQL del proyecto.
 - `JWT_SECRET`: secreto de sesiones estable.
 - `UPLOAD_DIR=/data/uploads`.
+
+Los tokens de acceso vencen después de `JWT_ACCESS_TOKEN_TTL_MINUTES` (60 por defecto). Las sesiones persistentes usan una vigencia móvil de `PERSISTENT_SESSION_TTL_DAYS` (30 por defecto) y se renuevan mediante `/api/v1/auth/refresh`.
 
 `PUBLIC_BASE_URL` es opcional en Railway porque se deriva de `RAILWAY_PUBLIC_DOMAIN`. Las variables `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` y `PGDATABASE` siguen admitidas como alternativa. También se conservan nombres históricos de URL PostgreSQL para facilitar migraciones.
 
