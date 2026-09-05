@@ -1,0 +1,302 @@
+diff -ruN /mnt/data/kredi_backend_original_for_diff/.env.example /mnt/data/kredi_backend_railway_work/.env.example
+--- /mnt/data/kredi_backend_original_for_diff/.env.example	2026-08-20 15:24:08.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/.env.example	2026-08-25 23:27:34.358955791 +0000
+@@ -1,7 +1,7 @@
+-# CREDICASH BACKEND 1.0.0 - RAILWAY
++# KREDI+ BACKEND 1.1.1 - RAILWAY (ACTUALIZACION DEL SERVICIO EXISTENTE)
+ # ------------------------------------------------------------
+-# En Railway crea PostgreSQL dentro del mismo proyecto y añade a este servicio
+-# una variable de referencia DATABASE_URL -> Postgres.DATABASE_URL.
++# Si el servicio ya existe en Railway, NO crees otro PostgreSQL. Conserva la referencia
++# DATABASE_URL actual hacia la misma base y mantén JWT_SECRET sin cambios.
+ # Este valor es solo un ejemplo local: nunca guardes credenciales reales aquí.
+ DATABASE_URL=postgresql://USUARIO:CLAVE@HOST:5432/BASE_DE_DATOS
+ 
+diff -ruN /mnt/data/kredi_backend_original_for_diff/ACTUALIZAR_RAILWAY_EXISTENTE.md /mnt/data/kredi_backend_railway_work/ACTUALIZAR_RAILWAY_EXISTENTE.md
+--- /mnt/data/kredi_backend_original_for_diff/ACTUALIZAR_RAILWAY_EXISTENTE.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/ACTUALIZAR_RAILWAY_EXISTENTE.md	2026-08-25 23:27:34.359121456 +0000
+@@ -0,0 +1,29 @@
++# Actualizar Kredi+ sobre el Railway existente
++
++## Objetivo
++Actualizar el backend que ya está en producción sin crear un servicio nuevo, sin cambiar de PostgreSQL y sin invalidar sesiones.
++
++## Antes del deploy
++1. En Railway abre el servicio backend actual y confirma que `DATABASE_URL` existe y apunta al PostgreSQL actual.
++2. Confirma que `JWT_SECRET` existe. **No lo copies a otro valor ni lo regeneres.**
++3. Si usas archivos subidos, confirma que el volumen sigue montado en `/data` y `UPLOAD_DIR=/data/uploads`.
++4. No borres ni recrees el servicio PostgreSQL.
++
++## Deploy
++- Si Railway está conectado a GitHub: reemplaza el código de la rama conectada por este paquete, commit y push. Railway construirá el `Dockerfile` automáticamente.
++- Si despliegas manualmente desde Railway CLI/Git: usa este directorio como raíz del mismo servicio existente.
++
++El contenedor ejecuta tests + `buildFatJar` durante build. Al arrancar, el backend conecta a la base existente, toma un advisory lock y ejecuta `schema.sql` idempotentemente. La migración 84 se registra en `versiones_esquema`.
++
++## Validación después del deploy
++Comprueba en este orden:
++1. `GET /health/live` -> 200.
++2. `GET /health/ready` -> 200.
++3. `GET /api/v1/health` -> base conectada/esquema listo.
++4. Inicia sesión desde el APK actual.
++5. Prueba suspender/reactivar una cuenta de prueba.
++6. Prueba eliminar una cuenta de prueba sin historial financiero.
++7. Verifica que una cuenta con historial financiero siga protegida y devuelva un mensaje claro en lugar de un 503 genérico.
++
++## Si el deployment falla
++Railway conserva deployments anteriores. No borres la base de datos: revisa primero el log de migración y la referencia/SQLSTATE. El script `scripts/repair-account-management-v84.sql` queda como reparación manual de emergencia, no como paso normal.
+diff -ruN /mnt/data/kredi_backend_original_for_diff/CHANGELOG.md /mnt/data/kredi_backend_railway_work/CHANGELOG.md
+--- /mnt/data/kredi_backend_original_for_diff/CHANGELOG.md	2026-08-20 15:17:40.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/CHANGELOG.md	2026-08-25 23:27:34.359170278 +0000
+@@ -1,3 +1,10 @@
++# 1.1.1 - Railway existing-service hotfix
++
++- Actualización in-place para el servicio Railway existente; no requiere nueva base ni nuevo dominio.
++- Verificación obligatoria de la migración 84 antes de declarar el backend READY.
++- Conserva compatibilidad de API, `DATABASE_URL`, `JWT_SECRET` y sesiones actuales.
++- Documentación corregida para evitar crear accidentalmente un segundo PostgreSQL/servicio.
++
+ # Historial de versiones
+ 
+ ## 1.1.0 — 2026-08-20
+diff -ruN /mnt/data/kredi_backend_original_for_diff/Dockerfile /mnt/data/kredi_backend_railway_work/Dockerfile
+--- /mnt/data/kredi_backend_original_for_diff/Dockerfile	2026-08-20 15:17:40.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/Dockerfile	2026-08-25 23:27:34.358580587 +0000
+@@ -1,7 +1,7 @@
+ FROM eclipse-temurin:21-jdk AS build
+ WORKDIR /workspace
+-ARG CREDICASH_BACKEND_VERSION="1.1.0"
+-RUN echo "Building Credicash Backend ${CREDICASH_BACKEND_VERSION} for Railway"
++ARG CREDICASH_BACKEND_VERSION="1.1.1"
++RUN echo "Building Kredi+ Backend ${CREDICASH_BACKEND_VERSION} for existing Railway service"
+ COPY . ./
+ RUN test -f gradle/wrapper/gradle-wrapper.jar || (echo "ERROR: falta gradle/wrapper/gradle-wrapper.jar en el contexto Docker" >&2; exit 1)
+ RUN chmod +x gradlew && ./gradlew --no-daemon --console=plain --max-workers=2 clean test buildFatJar --stacktrace
+diff -ruN /mnt/data/kredi_backend_original_for_diff/RAILWAY_EXISTING_UPDATE.patch /mnt/data/kredi_backend_railway_work/RAILWAY_EXISTING_UPDATE.patch
+--- /mnt/data/kredi_backend_original_for_diff/RAILWAY_EXISTING_UPDATE.patch	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/RAILWAY_EXISTING_UPDATE.patch	2026-08-25 23:28:20.148438789 +0000
+@@ -0,0 +1,74 @@
++diff -ruN /mnt/data/kredi_backend_original_for_diff/.env.example /mnt/data/kredi_backend_railway_work/.env.example
++--- /mnt/data/kredi_backend_original_for_diff/.env.example	2026-08-20 15:24:08.000000000 +0000
+++++ /mnt/data/kredi_backend_railway_work/.env.example	2026-08-25 23:27:34.358955791 +0000
++@@ -1,7 +1,7 @@
++-# CREDICASH BACKEND 1.0.0 - RAILWAY
+++# KREDI+ BACKEND 1.1.1 - RAILWAY (ACTUALIZACION DEL SERVICIO EXISTENTE)
++ # ------------------------------------------------------------
++-# En Railway crea PostgreSQL dentro del mismo proyecto y añade a este servicio
++-# una variable de referencia DATABASE_URL -> Postgres.DATABASE_URL.
+++# Si el servicio ya existe en Railway, NO crees otro PostgreSQL. Conserva la referencia
+++# DATABASE_URL actual hacia la misma base y mantén JWT_SECRET sin cambios.
++ # Este valor es solo un ejemplo local: nunca guardes credenciales reales aquí.
++ DATABASE_URL=postgresql://USUARIO:CLAVE@HOST:5432/BASE_DE_DATOS
++ 
++diff -ruN /mnt/data/kredi_backend_original_for_diff/ACTUALIZAR_RAILWAY_EXISTENTE.md /mnt/data/kredi_backend_railway_work/ACTUALIZAR_RAILWAY_EXISTENTE.md
++--- /mnt/data/kredi_backend_original_for_diff/ACTUALIZAR_RAILWAY_EXISTENTE.md	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/kredi_backend_railway_work/ACTUALIZAR_RAILWAY_EXISTENTE.md	2026-08-25 23:27:34.359121456 +0000
++@@ -0,0 +1,29 @@
+++# Actualizar Kredi+ sobre el Railway existente
+++
+++## Objetivo
+++Actualizar el backend que ya está en producción sin crear un servicio nuevo, sin cambiar de PostgreSQL y sin invalidar sesiones.
+++
+++## Antes del deploy
+++1. En Railway abre el servicio backend actual y confirma que `DATABASE_URL` existe y apunta al PostgreSQL actual.
+++2. Confirma que `JWT_SECRET` existe. **No lo copies a otro valor ni lo regeneres.**
+++3. Si usas archivos subidos, confirma que el volumen sigue montado en `/data` y `UPLOAD_DIR=/data/uploads`.
+++4. No borres ni recrees el servicio PostgreSQL.
+++
+++## Deploy
+++- Si Railway está conectado a GitHub: reemplaza el código de la rama conectada por este paquete, commit y push. Railway construirá el `Dockerfile` automáticamente.
+++- Si despliegas manualmente desde Railway CLI/Git: usa este directorio como raíz del mismo servicio existente.
+++
+++El contenedor ejecuta tests + `buildFatJar` durante build. Al arrancar, el backend conecta a la base existente, toma un advisory lock y ejecuta `schema.sql` idempotentemente. La migración 84 se registra en `versiones_esquema`.
+++
+++## Validación después del deploy
+++Comprueba en este orden:
+++1. `GET /health/live` -> 200.
+++2. `GET /health/ready` -> 200.
+++3. `GET /api/v1/health` -> base conectada/esquema listo.
+++4. Inicia sesión desde el APK actual.
+++5. Prueba suspender/reactivar una cuenta de prueba.
+++6. Prueba eliminar una cuenta de prueba sin historial financiero.
+++7. Verifica que una cuenta con historial financiero siga protegida y devuelva un mensaje claro en lugar de un 503 genérico.
+++
+++## Si el deployment falla
+++Railway conserva deployments anteriores. No borres la base de datos: revisa primero el log de migración y la referencia/SQLSTATE. El script `scripts/repair-account-management-v84.sql` queda como reparación manual de emergencia, no como paso normal.
++diff -ruN /mnt/data/kredi_backend_original_for_diff/CHANGELOG.md /mnt/data/kredi_backend_railway_work/CHANGELOG.md
++--- /mnt/data/kredi_backend_original_for_diff/CHANGELOG.md	2026-08-20 15:17:40.000000000 +0000
+++++ /mnt/data/kredi_backend_railway_work/CHANGELOG.md	2026-08-25 23:27:34.359170278 +0000
++@@ -1,3 +1,10 @@
+++# 1.1.1 - Railway existing-service hotfix
+++
+++- Actualización in-place para el servicio Railway existente; no requiere nueva base ni nuevo dominio.
+++- Verificación obligatoria de la migración 84 antes de declarar el backend READY.
+++- Conserva compatibilidad de API, `DATABASE_URL`, `JWT_SECRET` y sesiones actuales.
+++- Documentación corregida para evitar crear accidentalmente un segundo PostgreSQL/servicio.
+++
++ # Historial de versiones
++ 
++ ## 1.1.0 — 2026-08-20
++diff -ruN /mnt/data/kredi_backend_original_for_diff/Dockerfile /mnt/data/kredi_backend_railway_work/Dockerfile
++--- /mnt/data/kredi_backend_original_for_diff/Dockerfile	2026-08-20 15:17:40.000000000 +0000
+++++ /mnt/data/kredi_backend_railway_work/Dockerfile	2026-08-25 23:27:34.358580587 +0000
++@@ -1,7 +1,7 @@
++ FROM eclipse-temurin:21-jdk AS build
++ WORKDIR /workspace
++-ARG CREDICASH_BACKEND_VERSION="1.1.0"
++-RUN echo "Building Credicash Backend ${CREDICASH_BACKEND_VERSION} for Railway"
+++ARG CREDICASH_BACKEND_VERSION="1.1.1"
+++RUN echo "Building Kredi+ Backend ${CREDICASH_BACKEND_VERSION} for existing Railway service"
++ COPY . ./
++ RUN test -f gradle/wrapper/gradle-wrapper.jar || (echo "ERROR: falta gradle/wrapper/gradle-wrapper.jar en el contexto Docker" >&2; exit 1)
++ RUN chmod +x gradlew && ./gradlew --no-daemon --console=plain --max-workers=2 clean test buildFatJar --stacktrace
+diff -ruN /mnt/data/kredi_backend_original_for_diff/README.md /mnt/data/kredi_backend_railway_work/README.md
+--- /mnt/data/kredi_backend_original_for_diff/README.md	2026-08-20 15:17:40.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/README.md	2026-08-25 23:27:34.359036530 +0000
+@@ -1,17 +1,32 @@
+-# Credicash Backend 1.1.0
++# Kredi+ Backend 1.1.1
+ 
+-Backend Kotlin/Ktor de Credicash, preparado para desplegarse en Railway con Docker y PostgreSQL.
++Backend Kotlin/Ktor de Kredi+, preparado para actualizar el servicio existente en Railway con Docker y PostgreSQL. Mantiene compatibilidad de API y nombres técnicos históricos para no romper el APK ni las sesiones actuales.
+ 
+-## Despliegue en Railway
++## Actualizar el servicio que YA existe en Railway
+ 
+-1. Conecta este repositorio como un servicio nuevo. Railway detectará `railway.toml` y construirá `Dockerfile`.
+-2. Añade PostgreSQL al mismo proyecto.
+-3. En las variables del backend, crea una referencia `DATABASE_URL` hacia `Postgres.DATABASE_URL`.
+-4. Define `JWT_SECRET` con al menos 32 bytes aleatorios y mantenlo estable entre despliegues.
+-5. Genera un dominio público para el servicio. Credicash usa `RAILWAY_PUBLIC_DOMAIN` automáticamente. Si empleas un dominio personalizado, define `PUBLIC_BASE_URL=https://tu-dominio` sin `/api/v1`.
+-6. Conecta un volumen persistente al backend y móntalo en `/data`. Mantén `UPLOAD_DIR=/data/uploads`.
++Este paquete **no requiere crear otro servicio ni otra base de datos**. Debe desplegarse sobre el backend Kredi+/Credicash que ya está conectado a Railway.
+ 
+-Railway inyecta `PORT` dinámicamente y la API escucha en `0.0.0.0`. No fijes `PORT` en las variables del servicio.
++1. Sustituye el código del repositorio/rama que ya usa el servicio Railway por esta versión y haz push, o ejecuta un redeploy desde la fuente existente.
++2. **No cambies `DATABASE_URL`**: debe seguir apuntando al mismo PostgreSQL que contiene tus usuarios y operaciones actuales.
++3. **No cambies `JWT_SECRET`**: si lo reemplazas, las sesiones existentes dejarán de validar.
++4. Conserva `UPLOAD_DIR=/data/uploads` y el mismo volumen persistente montado en `/data` si ya lo estás usando.
++5. Conserva el dominio público actual. El APK Kredi+ está configurado para la API de Railway y no necesita un dominio nuevo.
++6. Al arrancar, el backend toma un `pg_advisory_xact_lock`, ejecuta el esquema de forma idempotente y aplica/verifica la migración 84 antes de marcar `/health/ready` como disponible.
++7. Espera a que Railway muestre el nuevo deployment como healthy antes de probar suspensión/eliminación desde Android.
++
++### Variables que NO debes regenerar durante esta actualización
++
++- `DATABASE_URL`
++- `JWT_SECRET`
++- `PUBLIC_BASE_URL` si usas dominio personalizado
++- credenciales/configuración de Firebase
++- referencias a volumen/`UPLOAD_DIR`
++
++Las variables `BOOTSTRAP_ACCOUNTANT_*` no son necesarias si el Contador ya existe. Puedes mantenerlas o retirarlas después de verificar la cuenta; no se usan para sobrescribir credenciales existentes.
++
++### Migración 84
++
++La migración 84 corrige las relaciones que impedían eliminar usuarios realmente vacíos y normaliza `suspended_by` con `ON DELETE SET NULL`. El esquema se ejecuta automáticamente durante el arranque y ahora `verifyRequiredSchema()` exige que la versión 84 haya quedado registrada. **No ejecutes `repair-account-management-v84.sql` manualmente antes del despliegue** salvo que el arranque reporte explícitamente que la migración automática no pudo completarse.
+ 
+ ## Salud
+ 
+diff -ruN /mnt/data/kredi_backend_original_for_diff/VALIDACION_RAILWAY_EXISTENTE.md /mnt/data/kredi_backend_railway_work/VALIDACION_RAILWAY_EXISTENTE.md
+--- /mnt/data/kredi_backend_original_for_diff/VALIDACION_RAILWAY_EXISTENTE.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/VALIDACION_RAILWAY_EXISTENTE.md	2026-08-25 23:28:20.135545922 +0000
+@@ -0,0 +1,18 @@
++# Validación del hotfix Railway existente
++
++Validación estática realizada antes de empaquetar:
++
++- Backend/runtime actualizado a `1.1.1`.
++- `railway.toml` mantiene `/health/ready` como healthcheck.
++- Docker sigue compilando/ejecutando con Java 21.
++- La migración 84 está incluida en `schema.sql`.
++- `Database.verifyRequiredSchema()` ahora exige que la migración 84 esté registrada.
++- El flujo de migración conserva `pg_advisory_xact_lock`, evitando que dos despliegues modifiquen el esquema simultáneamente.
++- No se encontraron referencias a Northflank dentro del backend empaquetado.
++- La documentación indica explícitamente actualizar el servicio Railway existente y conservar `DATABASE_URL`, `JWT_SECRET`, dominio y volumen.
++
++## Compilación en este entorno
++
++Se intentó ejecutar `./gradlew test`. El wrapper inició correctamente, pero este entorno no tiene salida DNS/Internet hacia `services.gradle.org`, por lo que Gradle 9.4.1 no pudo descargarse (`UnknownHostException`). Esto ocurre antes de compilar el proyecto y no corresponde a un error del código.
++
++Railway sí podrá ejecutar el `Dockerfile` durante el deployment si tiene acceso normal a Internet para descargar las dependencias Gradle/Maven.
+diff -ruN /mnt/data/kredi_backend_original_for_diff/build.gradle.kts /mnt/data/kredi_backend_railway_work/build.gradle.kts
+--- /mnt/data/kredi_backend_original_for_diff/build.gradle.kts	2026-08-20 15:17:40.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/build.gradle.kts	2026-08-25 23:27:34.358346932 +0000
+@@ -5,7 +5,7 @@
+ }
+ 
+ group = "com.impulsosocial"
+-version = "1.1.0"
++version = "1.1.1"
+ 
+ repositories { mavenCentral() }
+ 
+diff -ruN /mnt/data/kredi_backend_original_for_diff/scripts/verify-migration-84.sql /mnt/data/kredi_backend_railway_work/scripts/verify-migration-84.sql
+--- /mnt/data/kredi_backend_original_for_diff/scripts/verify-migration-84.sql	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/scripts/verify-migration-84.sql	2026-08-25 23:28:20.134890780 +0000
+@@ -0,0 +1,25 @@
++-- Verificación no destructiva posterior al deploy de Kredi+ 1.1.1.
++SELECT version, description, applied_at
++FROM versiones_esquema
++WHERE version = 84;
++
++SELECT
++  tc.table_name,
++  kcu.column_name,
++  rc.delete_rule,
++  tc.constraint_name
++FROM information_schema.table_constraints tc
++JOIN information_schema.key_column_usage kcu
++  ON tc.constraint_name = kcu.constraint_name
++ AND tc.constraint_schema = kcu.constraint_schema
++JOIN information_schema.referential_constraints rc
++  ON tc.constraint_name = rc.constraint_name
++ AND tc.constraint_schema = rc.constraint_schema
++WHERE tc.constraint_type = 'FOREIGN KEY'
++  AND tc.table_schema = 'public'
++  AND (
++    (tc.table_name = 'cuentas_credito' AND kcu.column_name = 'user_id') OR
++    (tc.table_name = 'usuarios_credimpulso' AND kcu.column_name = 'user_id') OR
++    (tc.table_name = 'usuarios' AND kcu.column_name = 'suspended_by')
++  )
++ORDER BY tc.table_name, kcu.column_name;
+diff -ruN /mnt/data/kredi_backend_original_for_diff/src/main/kotlin/com/impulsosocial/server/Version.kt /mnt/data/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/Version.kt
+--- /mnt/data/kredi_backend_original_for_diff/src/main/kotlin/com/impulsosocial/server/Version.kt	2026-08-20 15:17:40.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/Version.kt	2026-08-25 23:27:34.358482603 +0000
+@@ -1,4 +1,4 @@
+ package com.impulsosocial.server
+ 
+ /** Versión pública y de runtime del backend. */
+-const val CREDICASH_APP_VERSION = "1.1.0"
++const val CREDICASH_APP_VERSION = "1.1.1"
+diff -ruN /mnt/data/kredi_backend_original_for_diff/src/main/kotlin/com/impulsosocial/server/db/Database.kt /mnt/data/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/db/Database.kt
+--- /mnt/data/kredi_backend_original_for_diff/src/main/kotlin/com/impulsosocial/server/db/Database.kt	2026-08-25 22:56:37.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/db/Database.kt	2026-08-25 23:27:34.358719863 +0000
+@@ -274,6 +274,16 @@
+             }
+ 
+             connection.prepareStatement(
++                "SELECT EXISTS(SELECT 1 FROM versiones_esquema WHERE version = 84)"
++            ).use { statement ->
++                statement.executeQuery().use { result ->
++                    check(result.next() && result.getBoolean(1)) {
++                        "La migración 84 de robustez de operaciones de cuenta no está registrada en versiones_esquema."
++                    }
++                }
++            }
++
++            connection.prepareStatement(
+                 """
+                 SELECT COUNT(*)
+                 FROM prestamos_credito
+diff -ruN /mnt/data/kredi_backend_original_for_diff/src/test/kotlin/com/impulsosocial/server/db/AccountManagementSchemaTest.kt /mnt/data/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/db/AccountManagementSchemaTest.kt
+--- /mnt/data/kredi_backend_original_for_diff/src/test/kotlin/com/impulsosocial/server/db/AccountManagementSchemaTest.kt	2026-08-25 22:58:12.000000000 +0000
++++ /mnt/data/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/db/AccountManagementSchemaTest.kt	2026-08-25 23:27:34.358854822 +0000
+@@ -20,5 +20,8 @@
+         assertTrue(schema.contains("Migración 84 / Robustez de eliminación"))
+         assertTrue(schema.contains("FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE"))
+         assertTrue(schema.contains("FOREIGN KEY (suspended_by) REFERENCES usuarios(id) ON DELETE SET NULL"))
++        val databaseSource = File("src/main/kotlin/com/impulsosocial/server/db/Database.kt").readText()
++        assertTrue(databaseSource.contains("version = 84"))
++        assertTrue(databaseSource.contains("La migración 84 de robustez de operaciones de cuenta"))
+     }
+ }

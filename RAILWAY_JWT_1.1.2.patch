@@ -1,0 +1,464 @@
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/.env.example /mnt/data/kredi_backend_jwtfix/.env.example
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/.env.example	2026-08-25 23:27:34.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/.env.example	2026-08-26 00:37:57.259128310 +0000
+@@ -1,4 +1,4 @@
+-# KREDI+ BACKEND 1.1.1 - RAILWAY (ACTUALIZACION DEL SERVICIO EXISTENTE)
++# KREDI+ BACKEND 1.1.2 - RAILWAY (ACTUALIZACION DEL SERVICIO EXISTENTE)
+ # ------------------------------------------------------------
+ # Si el servicio ya existe en Railway, NO crees otro PostgreSQL. Conserva la referencia
+ # DATABASE_URL actual hacia la misma base y mantén JWT_SECRET sin cambios.
+@@ -13,8 +13,11 @@
+ # Defínelo solo si usarás un dominio personalizado. No agregues /api/v1.
+ PUBLIC_BASE_URL=
+ 
+-# Sesiones. Genera una clave aleatoria de al menos 32 bytes y mantenla estable entre despliegues.
+-JWT_SECRET=CAMBIA_ESTA_CLAVE_POR_UNA_ALEATORIA_LARGA
++# Sesiones. Recomendado: define una clave aleatoria de al menos 32 bytes y mantenla estable.
++# Compatibilidad Railway existente: si JWT_SECRET queda vacío, Kredi+ genera una clave segura
++# una sola vez en el volumen persistente y la reutiliza en los siguientes reinicios/despliegues.
++JWT_SECRET=
++JWT_SECRET_FILE=/data/.kredi-secrets/jwt-secret
+ REQUIRE_STABLE_JWT_SECRET=true
+ JWT_ISSUER=credicash
+ JWT_AUDIENCE=credicash-android
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/CHANGELOG.md /mnt/data/kredi_backend_jwtfix/CHANGELOG.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/CHANGELOG.md	2026-08-26 00:16:52.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/CHANGELOG.md	2026-08-26 00:36:21.483972305 +0000
+@@ -1,3 +1,12 @@
++# Kredi+ Backend 1.1.2
++
++- Corrige el crash loop de Railway cuando una instalación histórica no tenía `JWT_SECRET`.
++- Busca primero `JWT_SECRET`, `KREDI_JWT_SECRET` o `JWT_SIGNING_SECRET`.
++- Si no existe variable en producción, crea/reutiliza una clave segura persistente fuera de `/uploads`.
++- Mantiene la validación fail-closed si no hay variable ni volumen escribible.
++- Añade prueba de persistencia de la clave JWT.
++- Conserva las correcciones de operaciones y migración 84 de 1.1.1.
++
+ # 1.1.1 - Railway existing-service hotfix
+ 
+ - Corrige `RailwayRuntimeConfigurationTest`: elimina el versionado rígido 1.1.0 y valida coherencia automática entre Gradle, runtime, Docker y OpenAPI.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md /mnt/data/kredi_backend_jwtfix/CORRECCION_BUILD_RAILWAY_2026-08-25.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md	2026-08-26 00:16:52.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/CORRECCION_BUILD_RAILWAY_2026-08-25.md	2026-08-26 00:36:21.485431364 +0000
+@@ -5,7 +5,7 @@
+ ## Corrección
+ - El test ya no contiene una versión rígida.
+ - Extrae y compara automáticamente las versiones de `build.gradle.kts`, `Version.kt`, `Dockerfile` y OpenAPI.
+-- OpenAPI fue actualizado a 1.1.1.
++- OpenAPI fue actualizado a 1.1.2.
+ - No se modifican `DATABASE_URL`, `JWT_SECRET`, volumen, dominio ni migraciones.
+ 
+ El comando de Railway puede mantenerse sin cambios:
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_JWT_RAILWAY_1.1.2.md /mnt/data/kredi_backend_jwtfix/CORRECCION_JWT_RAILWAY_1.1.2.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_JWT_RAILWAY_1.1.2.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/CORRECCION_JWT_RAILWAY_1.1.2.md	2026-08-26 00:37:59.693862540 +0000
+@@ -0,0 +1,24 @@
++# Corrección Railway 1.1.2 — JWT persistente
++
++## Error observado
++Railway iniciaba el contenedor y Ktor abortaba inmediatamente con:
++
++`JWT_SECRET es obligatorio en producción`
++
++El servicio entraba en un ciclo de reinicios antes de abrir la API.
++
++## Causa
++La versión histórica desplegada no tenía una variable `JWT_SECRET` estable. La validación de seguridad añadida en 1.1.1 hizo correctamente fail-closed, pero eso impidió actualizar instalaciones antiguas que ya tenían un volumen persistente.
++
++## Corrección
++1. Se siguen priorizando `JWT_SECRET`, `KREDI_JWT_SECRET` y `JWT_SIGNING_SECRET`.
++2. Si ninguna existe en Railway, Kredi+ crea una clave aleatoria criptográfica de 48 bytes una sola vez.
++3. La clave se guarda por defecto en `/data/.kredi-secrets/jwt-secret`, fuera de `/data/uploads`.
++4. En reinicios y nuevos despliegues se reutiliza exactamente la misma clave.
++5. Si no existe variable y tampoco hay almacenamiento persistente escribible, el backend continúa fallando de forma segura; no usa una clave efímera en producción.
++6. `JWT_SECRET_FILE` permite elegir otra ruta persistente.
++
++## Railway existente
++No crees otro servicio ni otra base de datos. Conserva el volumen montado en `/data` y `UPLOAD_DIR=/data/uploads`.
++
++Si ya tienes `JWT_SECRET` configurado, no cambia nada: esa variable sigue teniendo prioridad y el archivo de respaldo no se usa.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/Dockerfile /mnt/data/kredi_backend_jwtfix/Dockerfile
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/Dockerfile	2026-08-25 23:27:34.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/Dockerfile	2026-08-26 00:36:21.468856112 +0000
+@@ -1,6 +1,6 @@
+ FROM eclipse-temurin:21-jdk AS build
+ WORKDIR /workspace
+-ARG CREDICASH_BACKEND_VERSION="1.1.1"
++ARG CREDICASH_BACKEND_VERSION="1.1.2"
+ RUN echo "Building Kredi+ Backend ${CREDICASH_BACKEND_VERSION} for existing Railway service"
+ COPY . ./
+ RUN test -f gradle/wrapper/gradle-wrapper.jar || (echo "ERROR: falta gradle/wrapper/gradle-wrapper.jar en el contexto Docker" >&2; exit 1)
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/RAILWAY_JWT_1.1.2.patch /mnt/data/kredi_backend_jwtfix/RAILWAY_JWT_1.1.2.patch
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/RAILWAY_JWT_1.1.2.patch	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/RAILWAY_JWT_1.1.2.patch	2026-08-26 00:37:59.695960268 +0000
+@@ -0,0 +1,90 @@
++diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/.env.example /mnt/data/kredi_backend_jwtfix/.env.example
++--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/.env.example	2026-08-25 23:27:34.000000000 +0000
+++++ /mnt/data/kredi_backend_jwtfix/.env.example	2026-08-26 00:37:57.259128310 +0000
++@@ -1,4 +1,4 @@
++-# KREDI+ BACKEND 1.1.1 - RAILWAY (ACTUALIZACION DEL SERVICIO EXISTENTE)
+++# KREDI+ BACKEND 1.1.2 - RAILWAY (ACTUALIZACION DEL SERVICIO EXISTENTE)
++ # ------------------------------------------------------------
++ # Si el servicio ya existe en Railway, NO crees otro PostgreSQL. Conserva la referencia
++ # DATABASE_URL actual hacia la misma base y mantén JWT_SECRET sin cambios.
++@@ -13,8 +13,11 @@
++ # Defínelo solo si usarás un dominio personalizado. No agregues /api/v1.
++ PUBLIC_BASE_URL=
++ 
++-# Sesiones. Genera una clave aleatoria de al menos 32 bytes y mantenla estable entre despliegues.
++-JWT_SECRET=CAMBIA_ESTA_CLAVE_POR_UNA_ALEATORIA_LARGA
+++# Sesiones. Recomendado: define una clave aleatoria de al menos 32 bytes y mantenla estable.
+++# Compatibilidad Railway existente: si JWT_SECRET queda vacío, Kredi+ genera una clave segura
+++# una sola vez en el volumen persistente y la reutiliza en los siguientes reinicios/despliegues.
+++JWT_SECRET=
+++JWT_SECRET_FILE=/data/.kredi-secrets/jwt-secret
++ REQUIRE_STABLE_JWT_SECRET=true
++ JWT_ISSUER=credicash
++ JWT_AUDIENCE=credicash-android
++diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/CHANGELOG.md /mnt/data/kredi_backend_jwtfix/CHANGELOG.md
++--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/CHANGELOG.md	2026-08-26 00:16:52.000000000 +0000
+++++ /mnt/data/kredi_backend_jwtfix/CHANGELOG.md	2026-08-26 00:36:21.483972305 +0000
++@@ -1,3 +1,12 @@
+++# Kredi+ Backend 1.1.2
+++
+++- Corrige el crash loop de Railway cuando una instalación histórica no tenía `JWT_SECRET`.
+++- Busca primero `JWT_SECRET`, `KREDI_JWT_SECRET` o `JWT_SIGNING_SECRET`.
+++- Si no existe variable en producción, crea/reutiliza una clave segura persistente fuera de `/uploads`.
+++- Mantiene la validación fail-closed si no hay variable ni volumen escribible.
+++- Añade prueba de persistencia de la clave JWT.
+++- Conserva las correcciones de operaciones y migración 84 de 1.1.1.
+++
++ # 1.1.1 - Railway existing-service hotfix
++ 
++ - Corrige `RailwayRuntimeConfigurationTest`: elimina el versionado rígido 1.1.0 y valida coherencia automática entre Gradle, runtime, Docker y OpenAPI.
++diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md /mnt/data/kredi_backend_jwtfix/CORRECCION_BUILD_RAILWAY_2026-08-25.md
++--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md	2026-08-26 00:16:52.000000000 +0000
+++++ /mnt/data/kredi_backend_jwtfix/CORRECCION_BUILD_RAILWAY_2026-08-25.md	2026-08-26 00:36:21.485431364 +0000
++@@ -5,7 +5,7 @@
++ ## Corrección
++ - El test ya no contiene una versión rígida.
++ - Extrae y compara automáticamente las versiones de `build.gradle.kts`, `Version.kt`, `Dockerfile` y OpenAPI.
++-- OpenAPI fue actualizado a 1.1.1.
+++- OpenAPI fue actualizado a 1.1.2.
++ - No se modifican `DATABASE_URL`, `JWT_SECRET`, volumen, dominio ni migraciones.
++ 
++ El comando de Railway puede mantenerse sin cambios:
++diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_JWT_RAILWAY_1.1.2.md /mnt/data/kredi_backend_jwtfix/CORRECCION_JWT_RAILWAY_1.1.2.md
++--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/CORRECCION_JWT_RAILWAY_1.1.2.md	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/kredi_backend_jwtfix/CORRECCION_JWT_RAILWAY_1.1.2.md	2026-08-26 00:37:59.693862540 +0000
++@@ -0,0 +1,24 @@
+++# Corrección Railway 1.1.2 — JWT persistente
+++
+++## Error observado
+++Railway iniciaba el contenedor y Ktor abortaba inmediatamente con:
+++
+++`JWT_SECRET es obligatorio en producción`
+++
+++El servicio entraba en un ciclo de reinicios antes de abrir la API.
+++
+++## Causa
+++La versión histórica desplegada no tenía una variable `JWT_SECRET` estable. La validación de seguridad añadida en 1.1.1 hizo correctamente fail-closed, pero eso impidió actualizar instalaciones antiguas que ya tenían un volumen persistente.
+++
+++## Corrección
+++1. Se siguen priorizando `JWT_SECRET`, `KREDI_JWT_SECRET` y `JWT_SIGNING_SECRET`.
+++2. Si ninguna existe en Railway, Kredi+ crea una clave aleatoria criptográfica de 48 bytes una sola vez.
+++3. La clave se guarda por defecto en `/data/.kredi-secrets/jwt-secret`, fuera de `/data/uploads`.
+++4. En reinicios y nuevos despliegues se reutiliza exactamente la misma clave.
+++5. Si no existe variable y tampoco hay almacenamiento persistente escribible, el backend continúa fallando de forma segura; no usa una clave efímera en producción.
+++6. `JWT_SECRET_FILE` permite elegir otra ruta persistente.
+++
+++## Railway existente
+++No crees otro servicio ni otra base de datos. Conserva el volumen montado en `/data` y `UPLOAD_DIR=/data/uploads`.
+++
+++Si ya tienes `JWT_SECRET` configurado, no cambia nada: esa variable sigue teniendo prioridad y el archivo de respaldo no se usa.
++diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/Dockerfile /mnt/data/kredi_backend_jwtfix/Dockerfile
++--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/Dockerfile	2026-08-25 23:27:34.000000000 +0000
+++++ /mnt/data/kredi_backend_jwtfix/Dockerfile	2026-08-26 00:36:21.468856112 +0000
++@@ -1,6 +1,6 @@
++ FROM eclipse-temurin:21-jdk AS build
++ WORKDIR /workspace
++-ARG CREDICASH_BACKEND_VERSION="1.1.1"
+++ARG CREDICASH_BACKEND_VERSION="1.1.2"
++ RUN echo "Building Kredi+ Backend ${CREDICASH_BACKEND_VERSION} for existing Railway service"
++ COPY . ./
++ RUN test -f gradle/wrapper/gradle-wrapper.jar || (echo "ERROR: falta gradle/wrapper/gradle-wrapper.jar en el contexto Docker" >&2; exit 1)
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/README.md /mnt/data/kredi_backend_jwtfix/README.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/README.md	2026-08-25 23:27:34.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/README.md	2026-08-26 00:37:57.258953117 +0000
+@@ -1,4 +1,4 @@
+-# Kredi+ Backend 1.1.1
++# Kredi+ Backend 1.1.2
+ 
+ Backend Kotlin/Ktor de Kredi+, preparado para actualizar el servicio existente en Railway con Docker y PostgreSQL. Mantiene compatibilidad de API y nombres técnicos históricos para no romper el APK ni las sesiones actuales.
+ 
+@@ -102,3 +102,12 @@
+ ## Migrar una base existente
+ 
+ Los scripts de `scripts/` usan `pg_dump` y `pg_restore`. Define `SOURCE_DATABASE_URL`, `TARGET_DATABASE_URL` y `CONFIRM_MIGRATION=YES` antes de ejecutarlos. Revisa siempre el destino: la restauración usa `--clean --if-exists`.
++
++
++## JWT en Railway existente (1.1.2)
++
++Si el servicio histórico no tiene `JWT_SECRET`, el backend ya no entra en un ciclo de reinicios.
++Con el volumen persistente montado en `/data`, crea una clave criptográfica estable en
++`/data/.kredi-secrets/jwt-secret` y la reutiliza. La ruta queda fuera de `/data/uploads` y no se
++expone por el endpoint de archivos. Si prefieres administrar la clave desde Railway, define
++`JWT_SECRET` y conserva el mismo valor en todos los despliegues.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/VALIDACION_BUILD_FIX.md /mnt/data/kredi_backend_jwtfix/VALIDACION_BUILD_FIX.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/VALIDACION_BUILD_FIX.md	2026-08-26 00:17:32.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/VALIDACION_BUILD_FIX.md	2026-08-26 00:36:21.485592436 +0000
+@@ -5,14 +5,14 @@
+ Correcciones aplicadas:
+ - Se eliminó el versionado rígido `1.1.0` del test.
+ - El test ahora extrae y compara automáticamente Gradle, runtime, Docker y OpenAPI.
+-- OpenAPI actualizado a `1.1.1`.
++- OpenAPI actualizado a `1.1.2`.
+ - La configuración de Railway, PostgreSQL, migración 84 y variables de entorno no se modificaron.
+ 
+ Validación estática local:
+-- Gradle: `1.1.1`
+-- Runtime: `1.1.1`
+-- Docker: `1.1.1`
+-- OpenAPI: `1.1.1`
++- Gradle: `1.1.2`
++- Runtime: `1.1.2`
++- Docker: `1.1.2`
++- OpenAPI: `1.1.2`
+ - Resultado: `STATIC_VERSION_TEST_OK`
+ 
+ El log aportado demuestra que compilación, `shadowJar`, `buildFatJar` y compilación de tests terminaban correctamente; el único bloqueo era el test de coherencia de versión.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/VALIDACION_JWT_FIX.md /mnt/data/kredi_backend_jwtfix/VALIDACION_JWT_FIX.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/VALIDACION_JWT_FIX.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/VALIDACION_JWT_FIX.md	2026-08-26 00:37:59.694836431 +0000
+@@ -0,0 +1,9 @@
++# Validación del fix JWT
++
++- AppConfig.kt validado con `kotlinc` 2.x/JDK 21: OK.
++- Prueba directa de persistencia: una clave creada en disco se lee idéntica en el segundo arranque: OK.
++- Tamaño de clave generada: 64 caracteres Base64URL (48 bytes aleatorios): OK.
++- Ruta por defecto Railway: `/data/.kredi-secrets/jwt-secret`: fuera del endpoint `/uploads`: OK.
++- Versión Gradle/runtime/Docker/OpenAPI: 1.1.2: OK.
++- La lógica de base de datos y migración 84 no fue revertida.
++- No fue posible ejecutar el wrapper Gradle completo en este entorno sin acceso de red a la distribución, pero el error reportado ocurre en runtime y el archivo modificado fue compilado de forma aislada con Kotlin/JDK 21.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/VALIDACION_RAILWAY_EXISTENTE.md /mnt/data/kredi_backend_jwtfix/VALIDACION_RAILWAY_EXISTENTE.md
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/VALIDACION_RAILWAY_EXISTENTE.md	2026-08-25 23:28:20.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/VALIDACION_RAILWAY_EXISTENTE.md	2026-08-26 00:36:21.485671435 +0000
+@@ -2,7 +2,7 @@
+ 
+ Validación estática realizada antes de empaquetar:
+ 
+-- Backend/runtime actualizado a `1.1.1`.
++- Backend/runtime actualizado a `1.1.2`.
+ - `railway.toml` mantiene `/health/ready` como healthcheck.
+ - Docker sigue compilando/ejecutando con Java 21.
+ - La migración 84 está incluida en `schema.sql`.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/build.gradle.kts /mnt/data/kredi_backend_jwtfix/build.gradle.kts
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/build.gradle.kts	2026-08-25 23:27:34.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/build.gradle.kts	2026-08-26 00:36:21.468799888 +0000
+@@ -5,7 +5,7 @@
+ }
+ 
+ group = "com.impulsosocial"
+-version = "1.1.1"
++version = "1.1.2"
+ 
+ repositories { mavenCentral() }
+ 
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/scripts/verify-migration-84.sql /mnt/data/kredi_backend_jwtfix/scripts/verify-migration-84.sql
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/scripts/verify-migration-84.sql	2026-08-25 23:28:20.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/scripts/verify-migration-84.sql	2026-08-26 00:37:57.259250093 +0000
+@@ -1,4 +1,4 @@
+--- Verificación no destructiva posterior al deploy de Kredi+ 1.1.1.
++-- Verificación no destructiva posterior al deploy de Kredi+ 1.1.2.
+ SELECT version, description, applied_at
+ FROM versiones_esquema
+ WHERE version = 84;
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/Version.kt /mnt/data/kredi_backend_jwtfix/src/main/kotlin/com/impulsosocial/server/Version.kt
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/Version.kt	2026-08-25 23:27:34.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/src/main/kotlin/com/impulsosocial/server/Version.kt	2026-08-26 00:36:21.468740839 +0000
+@@ -1,4 +1,4 @@
+ package com.impulsosocial.server
+ 
+ /** Versión pública y de runtime del backend. */
+-const val CREDICASH_APP_VERSION = "1.1.1"
++const val CREDICASH_APP_VERSION = "1.1.2"
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt /mnt/data/kredi_backend_jwtfix/src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt	2026-08-20 15:24:08.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt	2026-08-26 00:36:21.468235260 +0000
+@@ -6,6 +6,10 @@
+ import java.net.URI
+ import java.net.URLDecoder
+ import java.nio.charset.StandardCharsets
++import java.nio.file.FileAlreadyExistsException
++import java.nio.file.Files
++import java.nio.file.Path
++import java.nio.file.StandardOpenOption
+ import java.security.SecureRandom
+ import java.util.Base64
+ 
+@@ -17,12 +21,8 @@
+ )
+ 
+ private val resolvedDatabaseEnvironment: DatabaseEnvironment by lazy { resolveDatabaseEnvironment() }
+-private val configuredJwtSecret: String? by lazy { optionalEnv("JWT_SECRET") }
+-private val generatedJwtSecret: String by lazy {
+-    val bytes = ByteArray(48)
+-    SecureRandom().nextBytes(bytes)
+-    Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+-}
++private val configuredJwtSecret: String? by lazy { resolveConfiguredJwtSecret() }
++private val generatedJwtSecret: String by lazy { generateSecureJwtSecret() }
+ 
+ data class AppConfig(
+     val dbUrl: String = resolvedDatabaseEnvironment.jdbcUrl,
+@@ -126,7 +126,7 @@
+             return "JWT_SECRET conserva un valor de ejemplo conocido. Genera una clave aleatoria real."
+         }
+         if (requireStableJwtSecret && usesGeneratedJwtSecret) {
+-            return "JWT_SECRET es obligatorio en producción. Define una clave aleatoria estable antes de iniciar Credicash."
++            return "No existe una clave JWT estable. Define JWT_SECRET o conecta un volumen persistente escribible para JWT_SECRET_FILE antes de iniciar Kredi+."
+         }
+         corsAllowedOrigins.forEach { origin ->
+             val uri = runCatching { URI(origin) }.getOrNull()
+@@ -147,6 +147,86 @@
+ 
+ }
+ 
++
++private fun resolveConfiguredJwtSecret(): String? {
++    firstEnvironmentValue("JWT_SECRET", "KREDI_JWT_SECRET", "JWT_SIGNING_SECRET")?.let { return it }
++
++    // En Railway el servicio puede provenir de una versión antigua que no exigía JWT_SECRET.
++    // Para no dejar el backend en un ciclo de reinicios, generamos una clave criptográfica una
++    // sola vez y la guardamos en el mismo volumen persistente usado por los uploads. La clave
++    // queda FUERA de la carpeta pública /uploads. Si no existe un volumen escribible, producción
++    // sigue fallando de forma segura en validateRuntimeSecurity() en vez de usar una clave efímera.
++    val explicitSecretFile = optionalEnv("JWT_SECRET_FILE")?.stripWrappingQuotes()
++    if (!isProductionEnvironment() && explicitSecretFile.isNullOrBlank()) return null
++
++    val secretPath = explicitSecretFile
++        ?.let(Path::of)
++        ?: defaultPersistentJwtSecretPath()
++
++    return runCatching { loadOrCreatePersistentJwtSecret(secretPath) }
++        .onFailure { error ->
++            System.err.println(
++                "Kredi+: JWT_SECRET no está definido y no fue posible cargar/crear la clave persistente en $secretPath: ${error.message}"
++            )
++        }
++        .getOrNull()
++}
++
++private fun defaultPersistentJwtSecretPath(): Path {
++    val uploadPath = Path.of(env("UPLOAD_DIR", "data/uploads").stripWrappingQuotes()).toAbsolutePath().normalize()
++    val volumeRoot = uploadPath.parent ?: uploadPath
++    return volumeRoot.resolve(".kredi-secrets").resolve("jwt-secret")
++}
++
++internal fun loadOrCreatePersistentJwtSecret(secretPath: Path): String {
++    fun readExisting(): String {
++        val value = Files.readString(secretPath, StandardCharsets.UTF_8).trim()
++        require(value.toByteArray(StandardCharsets.UTF_8).size >= 32) {
++            "La clave persistida existe pero contiene menos de 32 bytes. Elimínala o define JWT_SECRET correctamente."
++        }
++        return value
++    }
++
++    if (Files.exists(secretPath)) return readExisting()
++
++    Files.createDirectories(secretPath.parent ?: Path.of("."))
++    val generated = generateSecureJwtSecret()
++    try {
++        Files.writeString(
++            secretPath,
++            generated,
++            StandardCharsets.UTF_8,
++            StandardOpenOption.CREATE_NEW,
++            StandardOpenOption.WRITE
++        )
++    } catch (_: FileAlreadyExistsException) {
++        // Dos instancias pueden arrancar a la vez durante un despliegue. La que perdió la carrera
++        // debe usar exactamente la clave que ya escribió la otra instancia.
++        return readExisting()
++    }
++
++    runCatching {
++        val file = secretPath.toFile()
++        file.setReadable(false, false)
++        file.setWritable(false, false)
++        file.setExecutable(false, false)
++        file.setReadable(true, true)
++        file.setWritable(true, true)
++    }
++
++    System.err.println(
++        "Kredi+: JWT_SECRET no estaba configurado; se creó una clave segura persistente en $secretPath. " +
++            "Puedes definir JWT_SECRET en Railway cuando quieras, pero no cambies ambas fuentes durante un despliegue activo."
++    )
++    return generated
++}
++
++private fun generateSecureJwtSecret(): String {
++    val bytes = ByteArray(48)
++    SecureRandom().nextBytes(bytes)
++    return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
++}
++
+ private fun resolveDatabaseEnvironment(): DatabaseEnvironment {
+     // Railway publica DATABASE_URL para PostgreSQL. Los demás nombres conservan
+     // compatibilidad con instalaciones existentes sin depender de un proveedor concreto.
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/main/resources/openapi/credicash.yaml /mnt/data/kredi_backend_jwtfix/src/main/resources/openapi/credicash.yaml
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/main/resources/openapi/credicash.yaml	2026-08-26 00:16:52.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/src/main/resources/openapi/credicash.yaml	2026-08-26 00:37:57.259366708 +0000
+@@ -1,8 +1,8 @@
+ openapi: 3.1.0
+ info:
+-  title: Credicash Backend API
+-  version: 1.1.1
+-  description: API de Credicash con control presupuestario jerárquico y trazabilidad financiera.
++  title: Kredi+ Backend API
++  version: 1.1.2
++  description: API de Kredi+ con control presupuestario jerárquico y trazabilidad financiera.
+ servers:
+   - url: /api/v1
+ security:
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt /mnt/data/kredi_backend_jwtfix/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt	2026-08-26 00:16:59.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt	2026-08-26 00:36:21.487116212 +0000
+@@ -108,7 +108,7 @@
+         val openApi = projectFile("src/main/resources/openapi/credicash.yaml")
+         val config = projectFile("src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt")
+         val application = projectFile("src/main/kotlin/com/impulsosocial/server/Application.kt")
+-        assertTrue(openApi.contains("version: 1.1.1"))
++        assertTrue(openApi.contains("version: 1.1.2"))
+         assertTrue(openApi.contains("/accountant/budget/dashboard:"))
+         assertTrue(openApi.contains("/accountant/budget/commitments:"))
+         assertTrue(config.contains("REQUIRE_STABLE_JWT_SECRET"))
+diff -ruN /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/config/PersistentJwtSecretTest.kt /mnt/data/kredi_backend_jwtfix/src/test/kotlin/com/impulsosocial/server/config/PersistentJwtSecretTest.kt
+--- /mnt/data/kredi_backend_current/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/config/PersistentJwtSecretTest.kt	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_jwtfix/src/test/kotlin/com/impulsosocial/server/config/PersistentJwtSecretTest.kt	2026-08-26 00:36:21.487409743 +0000
+@@ -0,0 +1,24 @@
++package com.impulsosocial.server.config
++
++import java.nio.file.Files
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++
++class PersistentJwtSecretTest {
++    @Test
++    fun `la clave autogenerada se conserva entre reinicios`() {
++        val root = Files.createTempDirectory("kredi-jwt-test")
++        try {
++            val secretFile = root.resolve("secrets").resolve("jwt-secret")
++            val first = loadOrCreatePersistentJwtSecret(secretFile)
++            val second = loadOrCreatePersistentJwtSecret(secretFile)
++
++            assertTrue(first.toByteArray(Charsets.UTF_8).size >= 32)
++            assertEquals(first, second)
++            assertEquals(first, Files.readString(secretFile).trim())
++        } finally {
++            root.toFile().deleteRecursively()
++        }
++    }
++}

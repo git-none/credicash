@@ -1,0 +1,268 @@
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/CHANGELOG.md /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/CHANGELOG.md
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/CHANGELOG.md	2026-08-26 00:58:14.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/CHANGELOG.md	2026-08-26 13:10:28.195494533 +0000
+@@ -1,3 +1,10 @@
++# 1.1.5 — Recuperación segura de credenciales del Contador
++
++- Corrige instalaciones donde `BOOTSTRAP_ACCOUNTANT_PASSWORD`/`PIN` de Railway no coincidían con los hashes históricos ya guardados en PostgreSQL.
++- Si el intento de login presenta exactamente la contraseña bootstrap configurada y existe un único Contador, se sincronizan contraseña y PIN de forma transaccional y auditada.
++- Un redeploy por sí solo no cambia credenciales: la recuperación solo se ejecuta durante un intento de login que coincide con la contraseña protegida.
++- No crea otra cuenta, no borra datos y no requiere migración de esquema.
++
+ # Changelog
+ 
+ ## 1.1.3 - 2026-08-25
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/Dockerfile /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/Dockerfile
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/Dockerfile	2026-08-26 11:35:31.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/Dockerfile	2026-08-26 13:10:28.195278498 +0000
+@@ -1,6 +1,6 @@
+ FROM eclipse-temurin:21-jdk AS build
+ WORKDIR /workspace
+-ARG CREDICASH_BACKEND_VERSION="1.1.4"
++ARG CREDICASH_BACKEND_VERSION="1.1.5"
+ RUN echo "Building Kredi+ Backend ${CREDICASH_BACKEND_VERSION} for existing Railway service"
+ COPY . ./
+ RUN test -f gradle/wrapper/gradle-wrapper.jar || (echo "ERROR: falta gradle/wrapper/gradle-wrapper.jar en el contexto Docker" >&2; exit 1)
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/FIX_LOGIN_CONTADOR_RAILWAY_1.1.5.md /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/FIX_LOGIN_CONTADOR_RAILWAY_1.1.5.md
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/FIX_LOGIN_CONTADOR_RAILWAY_1.1.5.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/FIX_LOGIN_CONTADOR_RAILWAY_1.1.5.md	2026-08-26 13:10:46.940272677 +0000
+@@ -0,0 +1,21 @@
++# Kredi+ Backend Railway 1.1.5 — recuperación de credenciales del Contador
++
++## Problema confirmado
++
++Railway puede mostrar `BOOTSTRAP_ACCOUNTANT_USERNAME`, `BOOTSTRAP_ACCOUNTANT_PASSWORD` y `BOOTSTRAP_ACCOUNTANT_PIN` correctamente, mientras PostgreSQL conserva hashes antiguos de una cuenta Contador creada en un despliegue anterior.
++
++En esa situación el identificador es localizado, pero `passwordSecurity.verify(...)` falla y Android muestra `Usuario o contraseña incorrectos.`.
++
++## Corrección
++
++Cuando el intento de login usa el identificador bootstrap del Contador:
++
++1. El backend comprueba que existe exactamente una cuenta con rol Contador.
++2. La contraseña enviada debe coincidir exactamente con `BOOTSTRAP_ACCOUNTANT_PASSWORD` de Railway.
++3. Solo en ese caso, si los hashes almacenados no coinciden, el backend vuelve a generar `password_hash` y `pin_hash` usando las variables protegidas actuales.
++4. La operación queda auditada como `BOOTSTRAP_ACCOUNTANT_CREDENTIALS_RECOVERED`.
++5. Después continúa el login normal y se solicita el PIN real.
++
++Un redeploy sin un intento de login no cambia la contraseña. Una contraseña distinta de la variable protegida tampoco activa la recuperación.
++
++No crea otra cuenta, no elimina datos y no requiere migración SQL.
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/README.md /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/README.md
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/README.md	2026-08-26 00:37:57.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/README.md	2026-08-26 13:10:28.195404328 +0000
+@@ -22,7 +22,7 @@
+ - credenciales/configuración de Firebase
+ - referencias a volumen/`UPLOAD_DIR`
+ 
+-Las variables `BOOTSTRAP_ACCOUNTANT_*` no son necesarias si el Contador ya existe. Puedes mantenerlas o retirarlas después de verificar la cuenta; no se usan para sobrescribir credenciales existentes.
++Las variables `BOOTSTRAP_ACCOUNTANT_*` no son necesarias si el Contador ya existe. En 1.1.5 pueden actuar como recuperación segura: si el login usa exactamente el usuario/correo y la contraseña configurados en Railway, y existe un único Contador, el backend sincroniza su hash de contraseña y PIN. Después de verificar el acceso, se recomienda retirar o rotar esas variables.
+ 
+ ### Migración 84
+ 
+@@ -47,7 +47,7 @@
+ 
+ Si existe una interfaz web, define `CORS_ALLOWED_ORIGINS` con sus orígenes HTTPS separados por coma. Cuando esta variable queda vacía en producción, ningún navegador externo recibe permisos CORS; las aplicaciones móviles nativas no se ven afectadas.
+ 
+-Las variables `BOOTSTRAP_ACCOUNTANT_PASSWORD` y `BOOTSTRAP_ACCOUNTANT_PIN` solo son necesarias durante la primera instalación. Una vez creado y verificado el Contador, retíralas de Railway y conserva las credenciales en un gestor seguro. Eliminar esas variables no borra la cuenta guardada en PostgreSQL.
++Las variables `BOOTSTRAP_ACCOUNTANT_PASSWORD` y `BOOTSTRAP_ACCOUNTANT_PIN` sirven para la primera instalación y, desde 1.1.5, también como recuperación controlada de una cuenta Contador histórica desincronizada. Una vez confirmado el acceso, retíralas o rótalas en Railway y conserva las credenciales en un gestor seguro. Eliminar esas variables no borra la cuenta guardada en PostgreSQL.
+ 
+ Los tokens de acceso vencen después de `JWT_ACCESS_TOKEN_TTL_MINUTES` (60 por defecto). Las sesiones persistentes usan una vigencia móvil de `PERSISTENT_SESSION_TTL_DAYS` (30 por defecto) y se renuevan mediante `/api/v1/auth/refresh`.
+ 
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/build.gradle.kts /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/build.gradle.kts
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/build.gradle.kts	2026-08-26 11:35:31.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/build.gradle.kts	2026-08-26 13:10:28.194807780 +0000
+@@ -5,7 +5,7 @@
+ }
+ 
+ group = "com.impulsosocial"
+-version = "1.1.4"
++version = "1.1.5"
+ 
+ repositories { mavenCentral() }
+ 
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/Version.kt /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/Version.kt
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/Version.kt	2026-08-26 11:35:31.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/Version.kt	2026-08-26 13:10:28.194927206 +0000
+@@ -1,4 +1,4 @@
+ package com.impulsosocial.server
+ 
+ /** Versión pública y de runtime del backend. */
+-const val CREDICASH_APP_VERSION = "1.1.4"
++const val CREDICASH_APP_VERSION = "1.1.5"
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/service/AppService.kt /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/service/AppService.kt
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/service/AppService.kt	2026-08-26 11:35:20.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/kotlin/com/impulsosocial/server/service/AppService.kt	2026-08-26 13:10:13.020247367 +0000
+@@ -69,6 +69,18 @@
+     evaluatedUsers: Int
+ ): Boolean = evaluatedUsers >= 3 && evaluatedInstallments >= 3 && approvedInstallments < 2
+ 
++internal fun shouldRecoverAccountantCredentials(
++    recoveryPassword: String?,
++    configuredPassword: String,
++    bootstrapConfigured: Boolean
++): Boolean {
++    if (!bootstrapConfigured || recoveryPassword == null || configuredPassword.isBlank()) return false
++    return MessageDigest.isEqual(
++        recoveryPassword.toByteArray(Charsets.UTF_8),
++        configuredPassword.toByteArray(Charsets.UTF_8)
++    )
++}
++
+ private val OPERATING_EXPENSE_CATEGORIES = linkedMapOf(
+     "TRANSPORTATION" to "Transporte",
+     "LOGISTICS" to "Logística",
+@@ -252,23 +264,94 @@
+         }
+     }
+ 
+-    fun ensureBootstrapAccountant() {
+-        // El bootstrap es únicamente de primera instalación. En producción nunca se
+-        // reescriben contraseña/PIN de un Contador existente desde variables de entorno.
+-        // Esto evita bloqueos y rotaciones accidentales durante un redeploy.
+-        val existingAccountantId = database.dataSource.connection.use { connection ->
++    fun ensureBootstrapAccountant(recoveryPassword: String? = null) {
++        // El bootstrap crea el Contador solo en la primera instalación. Para instalaciones
++        // existentes, las credenciales configuradas en Railway pueden actuar como mecanismo
++        // de recuperación únicamente cuando el propio intento de login presenta exactamente
++        // BOOTSTRAP_ACCOUNTANT_PASSWORD. Así un redeploy no pisa una contraseña cambiada por
++        // el usuario, pero una instalación con hash histórico desincronizado puede repararse.
++        val existingAccountantIds = database.dataSource.connection.use { connection ->
+             connection.prepareStatement(
+-                "SELECT id FROM usuarios WHERE UPPER(TRIM(role)) IN ('ACCOUNTANT','CONTADOR','CONTADORA','FINANCE','FINANZAS') ORDER BY id LIMIT 1"
++                "SELECT id FROM usuarios WHERE UPPER(TRIM(role)) IN ('ACCOUNTANT','CONTADOR','CONTADORA','FINANCE','FINANZAS') ORDER BY id LIMIT 2"
+             ).use { statement ->
+-                statement.executeQuery().use { result -> if (result.next()) result.getLong(1) else null }
++                statement.executeQuery().use { result ->
++                    buildList {
++                        while (result.next() && size < 2) add(result.getLong(1))
++                    }
++                }
+             }
+         }
+-        if (existingAccountantId != null) {
+-            database.transaction { connection ->
+-                ensureAccountantBootstrapInfrastructure(connection)
+-                ensureAccountantWallet(connection, existingAccountantId)
++        val existingAccountantId = existingAccountantIds.singleOrNull()
++        if (existingAccountantIds.isNotEmpty()) {
++            if (existingAccountantId != null && recoveryPassword != null && config.bootstrapAccountantConfigured) {
++                val configuredPassword = cleanBootstrapValue(config.bootstrapAccountantPassword)
++                val recoveryMatchesEnvironment = shouldRecoverAccountantCredentials(
++                    recoveryPassword = recoveryPassword,
++                    configuredPassword = configuredPassword,
++                    bootstrapConfigured = config.bootstrapAccountantConfigured
++                )
++                if (recoveryMatchesEnvironment) {
++                    config.validateBootstrapAccountant()
++                    val configuredPin = cleanBootstrapValue(config.bootstrapAccountantPin)
++                    database.transaction { connection ->
++                        ensureAccountantBootstrapInfrastructure(connection)
++                        val currentHashes = connection.prepareStatement(
++                            "SELECT password_hash,pin_hash FROM usuarios WHERE id=? FOR UPDATE"
++                        ).use { statement ->
++                            statement.setLong(1, existingAccountantId)
++                            statement.executeQuery().use { result ->
++                                if (!result.next()) throw AppException("No fue posible localizar la cuenta del contador.")
++                                result.getString("password_hash") to result.getString("pin_hash")
++                            }
++                        }
++                        val passwordOutOfSync = !passwordSecurity.verify(currentHashes.first, configuredPassword)
++                        val pinOutOfSync = !passwordSecurity.verify(currentHashes.second, configuredPin)
++                        if (passwordOutOfSync || pinOutOfSync) {
++                            connection.prepareStatement(
++                                """UPDATE usuarios
++                                   SET password_hash=?,pin_hash=?,role='ACCOUNTANT',account_status='ACTIVE',
++                                       verification_status='VERIFIED',email_verified=TRUE,failed_login_attempts=0,
++                                       locked_until=NULL,updated_at=NOW()
++                                   WHERE id=?"""
++                            ).use { statement ->
++                                statement.setString(1, passwordSecurity.hash(configuredPassword))
++                                statement.setString(2, passwordSecurity.hash(configuredPin))
++                                statement.setLong(3, existingAccountantId)
++                                statement.executeUpdate()
++                            }
++                            withSavepointFallback(
++                                connection = connection,
++                                fallback = Unit,
++                                context = "registrar recuperación de credenciales del contador"
++                            ) {
++                                audit(
++                                    connection,
++                                    existingAccountantId,
++                                    "BOOTSTRAP_ACCOUNTANT_CREDENTIALS_RECOVERED",
++                                    "ACCOUNTANT",
++                                    existingAccountantId.toString(),
++                                    "Contraseña/PIN del Contador sincronizados desde variables protegidas durante un login válido."
++                                )
++                            }
++                            logger.warn("Credenciales del Contador recuperadas desde variables protegidas de Railway.")
++                        }
++                        ensureAccountantWallet(connection, existingAccountantId)
++                    }
++                } else {
++                    database.transaction { connection ->
++                        ensureAccountantBootstrapInfrastructure(connection)
++                        ensureAccountantWallet(connection, existingAccountantId)
++                    }
++                }
++            } else {
++                database.transaction { connection ->
++                    ensureAccountantBootstrapInfrastructure(connection)
++                    existingAccountantIds.forEach { ensureAccountantWallet(connection, it) }
++                }
++                if (existingAccountantIds.size > 1 && recoveryPassword != null) {
++                    logger.error("No se aplicó recuperación bootstrap: existen múltiples cuentas con rol Contador.")
++                }
+             }
+-            logger.info("Contador existente detectado; el bootstrap no modificó sus credenciales.")
+             return
+         }
+ 
+@@ -761,8 +844,8 @@
+         val configuredAccountantEmail = cleanBootstrapValue(config.bootstrapAccountantEmail).lowercase()
+         val configuredAccountantUsername = bootstrapUsername(config.bootstrapAccountantUsername, configuredAccountantEmail, "CONTADOR")
+         if (config.bootstrapAccountantConfigured && (identifier.equals(configuredAccountantUsername, true) || identifier.equals(configuredAccountantEmail, true))) {
+-            runCatching { ensureBootstrapAccountant() }
+-                .onFailure { error -> logger.error("No fue posible reparar la cuenta del contador durante el inicio de sesión.", error) }
++            runCatching { ensureBootstrapAccountant(request.password) }
++                .onFailure { error -> logger.error("No fue posible recuperar la cuenta del contador durante el inicio de sesión.", error) }
+         }
+ 
+         val decision = database.transaction { connection ->
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/resources/openapi/credicash.yaml /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/resources/openapi/credicash.yaml
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/resources/openapi/credicash.yaml	2026-08-26 11:35:31.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/main/resources/openapi/credicash.yaml	2026-08-26 13:10:28.195182345 +0000
+@@ -1,7 +1,7 @@
+ openapi: 3.1.0
+ info:
+   title: Kredi+ Backend API
+-  version: 1.1.4
++  version: 1.1.5
+   description: API de Kredi+ con control presupuestario jerárquico y trazabilidad financiera.
+ servers:
+   - url: /api/v1
+diff -ruN /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/test/kotlin/com/impulsosocial/server/service/AccountantCredentialRecoveryTest.kt /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/test/kotlin/com/impulsosocial/server/service/AccountantCredentialRecoveryTest.kt
+--- /mnt/data/backend_114_original/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/test/kotlin/com/impulsosocial/server/service/AccountantCredentialRecoveryTest.kt	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/backend_114_work/KREDI_PLUS_BACKEND_RAILWAY_1.1.4_FIX_LOGIN_CONTADOR_2026-08-26/src/test/kotlin/com/impulsosocial/server/service/AccountantCredentialRecoveryTest.kt	2026-08-26 13:10:46.936272673 +0000
+@@ -0,0 +1,20 @@
++package com.impulsosocial.server.service
++
++import kotlin.test.Test
++import kotlin.test.assertFalse
++import kotlin.test.assertTrue
++
++class AccountantCredentialRecoveryTest {
++    @Test
++    fun allowsRecoveryOnlyWhenProtectedPasswordMatches() {
++        assertTrue(shouldRecoverAccountantCredentials("ClaveSegura1!", "ClaveSegura1!", true))
++        assertFalse(shouldRecoverAccountantCredentials("OtraClave1!", "ClaveSegura1!", true))
++    }
++
++    @Test
++    fun doesNotRecoverWithoutCompleteBootstrapConfiguration() {
++        assertFalse(shouldRecoverAccountantCredentials("ClaveSegura1!", "ClaveSegura1!", false))
++        assertFalse(shouldRecoverAccountantCredentials(null, "ClaveSegura1!", true))
++        assertFalse(shouldRecoverAccountantCredentials("ClaveSegura1!", "", true))
++    }
++}

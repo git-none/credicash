@@ -1,0 +1,122 @@
+diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CHANGELOG.md /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CHANGELOG.md
+--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CHANGELOG.md	2026-08-25 23:27:34.000000000 +0000
++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CHANGELOG.md	2026-08-26 00:16:52.714038007 +0000
+@@ -1,5 +1,8 @@
+ # 1.1.1 - Railway existing-service hotfix
+ 
++- Corrige `RailwayRuntimeConfigurationTest`: elimina el versionado rígido 1.1.0 y valida coherencia automática entre Gradle, runtime, Docker y OpenAPI.
++- OpenAPI actualizado a 1.1.1 para coincidir con el runtime desplegado.
++
+ - Actualización in-place para el servicio Railway existente; no requiere nueva base ni nuevo dominio.
+ - Verificación obligatoria de la migración 84 antes de declarar el backend READY.
+ - Conserva compatibilidad de API, `DATABASE_URL`, `JWT_SECRET` y sesiones actuales.
+diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md
+--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md	2026-08-26 00:16:52.714119950 +0000
+@@ -0,0 +1,12 @@
++# Corrección de build Railway
++
++El deployment fallaba después de compilar correctamente porque `RailwayRuntimeConfigurationTest` seguía exigiendo la versión 1.1.0.
++
++## Corrección
++- El test ya no contiene una versión rígida.
++- Extrae y compara automáticamente las versiones de `build.gradle.kts`, `Version.kt`, `Dockerfile` y OpenAPI.
++- OpenAPI fue actualizado a 1.1.1.
++- No se modifican `DATABASE_URL`, `JWT_SECRET`, volumen, dominio ni migraciones.
++
++El comando de Railway puede mantenerse sin cambios:
++`./gradlew --no-daemon --console=plain --max-workers=2 clean test buildFatJar --stacktrace`
+diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/RAILWAY_BUILD_FIX.patch /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/RAILWAY_BUILD_FIX.patch
+--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/RAILWAY_BUILD_FIX.patch	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/RAILWAY_BUILD_FIX.patch	2026-08-26 00:17:32.155324755 +0000
+@@ -0,0 +1,28 @@
++diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CHANGELOG.md /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CHANGELOG.md
++--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CHANGELOG.md	2026-08-25 23:27:34.000000000 +0000
+++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CHANGELOG.md	2026-08-26 00:16:52.714038007 +0000
++@@ -1,5 +1,8 @@
++ # 1.1.1 - Railway existing-service hotfix
++ 
+++- Corrige `RailwayRuntimeConfigurationTest`: elimina el versionado rígido 1.1.0 y valida coherencia automática entre Gradle, runtime, Docker y OpenAPI.
+++- OpenAPI actualizado a 1.1.1 para coincidir con el runtime desplegado.
+++
++ - Actualización in-place para el servicio Railway existente; no requiere nueva base ni nuevo dominio.
++ - Verificación obligatoria de la migración 84 antes de declarar el backend READY.
++ - Conserva compatibilidad de API, `DATABASE_URL`, `JWT_SECRET` y sesiones actuales.
++diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md
++--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/CORRECCION_BUILD_RAILWAY_2026-08-25.md	2026-08-26 00:16:52.714119950 +0000
++@@ -0,0 +1,12 @@
+++# Corrección de build Railway
+++
+++El deployment fallaba después de compilar correctamente porque `RailwayRuntimeConfigurationTest` seguía exigiendo la versión 1.1.0.
+++
+++## Corrección
+++- El test ya no contiene una versión rígida.
+++- Extrae y compara automáticamente las versiones de `build.gradle.kts`, `Version.kt`, `Dockerfile` y OpenAPI.
+++- OpenAPI fue actualizado a 1.1.1.
+++- No se modifican `DATABASE_URL`, `JWT_SECRET`, volumen, dominio ni migraciones.
+++
+++El comando de Railway puede mantenerse sin cambios:
+++`./gradlew --no-daemon --console=plain --max-workers=2 clean test buildFatJar --stacktrace`
+diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/src/main/resources/openapi/credicash.yaml /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/src/main/resources/openapi/credicash.yaml
+--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/src/main/resources/openapi/credicash.yaml	2026-08-20 15:18:44.000000000 +0000
++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/src/main/resources/openapi/credicash.yaml	2026-08-26 00:16:52.713956786 +0000
+@@ -1,7 +1,7 @@
+ openapi: 3.1.0
+ info:
+   title: Credicash Backend API
+-  version: 1.1.0
++  version: 1.1.1
+   description: API de Credicash con control presupuestario jerárquico y trazabilidad financiera.
+ servers:
+   - url: /api/v1
+diff -ruN /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt
+--- /mnt/data/kredi_backend_orig_run/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt	2026-08-20 15:23:36.000000000 +0000
++++ /mnt/data/kredi_backend_fix_run/kredi_backend_railway_work/src/test/kotlin/com/impulsosocial/server/RailwayRuntimeConfigurationTest.kt	2026-08-26 00:16:59.464113949 +0000
+@@ -3,6 +3,8 @@
+ import java.nio.file.Files
+ import java.nio.file.Path
+ import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotNull
+ import kotlin.test.assertTrue
+ 
+ class RailwayRuntimeConfigurationTest {
+@@ -68,13 +70,24 @@
+     }
+ 
+     @Test
+-    fun `la version estable es coherente en compilacion y runtime`() {
++    fun `la version estable es coherente en compilacion runtime docker y openapi`() {
+         val build = projectFile("build.gradle.kts")
+         val runtime = projectFile("src/main/kotlin/com/impulsosocial/server/Version.kt")
+         val dockerfile = projectFile("Dockerfile")
+-        assertTrue(build.contains("version = \"1.1.0\""))
+-        assertTrue(runtime.contains("CREDICASH_APP_VERSION = \"1.1.0\""))
+-        assertTrue(dockerfile.contains("CREDICASH_BACKEND_VERSION=\"1.1.0\""))
++        val openApi = projectFile("src/main/resources/openapi/credicash.yaml")
++
++        val buildVersion = Regex("(?m)^version\\s*=\\s*\"([^\"]+)\"").find(build)?.groupValues?.get(1)
++        val runtimeVersion = Regex("CREDICASH_APP_VERSION\\s*=\\s*\"([^\"]+)\"").find(runtime)?.groupValues?.get(1)
++        val dockerVersion = Regex("CREDICASH_BACKEND_VERSION=\"([^\"]+)\"").find(dockerfile)?.groupValues?.get(1)
++        val openApiVersion = Regex("(?m)^\\s*version:\\s*([^\\s]+)").find(openApi)?.groupValues?.get(1)
++
++        assertNotNull(buildVersion, "No se pudo leer la version de build.gradle.kts")
++        assertNotNull(runtimeVersion, "No se pudo leer CREDICASH_APP_VERSION")
++        assertNotNull(dockerVersion, "No se pudo leer CREDICASH_BACKEND_VERSION del Dockerfile")
++        assertNotNull(openApiVersion, "No se pudo leer la version del OpenAPI")
++        assertEquals(buildVersion, runtimeVersion, "Gradle y runtime deben publicar la misma version")
++        assertEquals(buildVersion, dockerVersion, "Gradle y Docker deben publicar la misma version")
++        assertEquals(buildVersion, openApiVersion, "Gradle y OpenAPI deben publicar la misma version")
+     }
+ 
+     @Test
+@@ -95,7 +108,7 @@
+         val openApi = projectFile("src/main/resources/openapi/credicash.yaml")
+         val config = projectFile("src/main/kotlin/com/impulsosocial/server/config/AppConfig.kt")
+         val application = projectFile("src/main/kotlin/com/impulsosocial/server/Application.kt")
+-        assertTrue(openApi.contains("version: 1.1.0"))
++        assertTrue(openApi.contains("version: 1.1.1"))
+         assertTrue(openApi.contains("/accountant/budget/dashboard:"))
+         assertTrue(openApi.contains("/accountant/budget/commitments:"))
+         assertTrue(config.contains("REQUIRE_STABLE_JWT_SECRET"))
